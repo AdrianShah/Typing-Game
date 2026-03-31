@@ -97,18 +97,11 @@ function setupHeaderDropdowns() {
             <div class="space-y-2">
                 <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant ml-0.5">Password</label>
                 <input class="w-full bg-[#1C1B1B] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all duration-300" placeholder="Password" type="password" id="login-password" />
-                <p class="text-[10px] text-[#8A9389]">Min 8 chars, upper/lower, number, symbol</p>
-            </div>
-            <div id="verification-section" class="hidden space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant ml-0.5">Verification Code</label>
-                <input class="w-full bg-[#1C1B1B] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all duration-300" placeholder="6-digit code" type="text" id="login-code" maxlength="6" />
+                <p class="text-[10px] text-[#8A9389]">Min 6 chars</p>
             </div>
             <div class="grid grid-cols-1 gap-2">
                 <button id="btn-register-submit" class="w-full bg-[#004B23] text-white font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#005a2b] transition-all duration-300" type="button">
                     Register
-                </button>
-                <button id="btn-verify-submit" class="hidden w-full bg-[#1C1B1B] border border-[#93D6A0]/40 text-[#93D6A0] font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#2A2A2A] transition-all duration-300" type="button">
-                    Verify Email
                 </button>
                 <button id="btn-login-submit" class="w-full bg-[#1C1B1B] border border-[#E9C176]/30 text-[#E9C176] font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#2A2A2A] transition-all duration-300" type="button">
                     Login
@@ -118,39 +111,23 @@ function setupHeaderDropdowns() {
 
         const regEmail = () => document.getElementById('login-email').value;
         const regPassword = () => document.getElementById('login-password').value;
-        const regCode = () => document.getElementById('login-code').value;
 
         document.getElementById('btn-register-submit').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-register-submit');
+            btn.innerHTML = 'Registering...';
+            btn.disabled = true;
+
             const result = await registerWithEmailPassword(regEmail(), regPassword());
             if (!result.ok) {
                 alert(result.error);
+                btn.innerHTML = 'Register';
+                btn.disabled = false;
                 return;
             }
 
-            registrationState = 'verifying';
-            const devCode = result.data?.devVerificationCode;
-            if (devCode) {
-                document.getElementById('login-code').value = devCode;
-                alert('No proper email provider hooked up yet: verification code auto-filled.');
-            } else {
-                alert('Verification email sent! Please check your inbox (including spam folder).');
-            }
-
-            // Show verification code input
-            document.getElementById('verification-section').classList.remove('hidden');
-            document.getElementById('btn-register-submit').classList.add('hidden');
-            document.getElementById('btn-verify-submit').classList.remove('hidden');
-        });
-
-        document.getElementById('btn-verify-submit').addEventListener('click', async () => {
-            const result = await verifyEmailCode(regEmail(), regCode());
-            if (!result.ok) {
-                alert(result.error);
-                return;
-            }
-            alert('Email verified. You can login now.');
-            registrationState = null;
-            renderLoginContainer(); // Recope
+            alert('Verification email sent! Please check your inbox (including spam folder). Once verified, you may Login.');
+            btn.innerHTML = 'Register';
+            btn.disabled = false;
         });
 
         document.getElementById('btn-login-submit').addEventListener('click', async () => {
