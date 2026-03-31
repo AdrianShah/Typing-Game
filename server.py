@@ -20,7 +20,7 @@ MAX_CPS = 22
 MAX_NET_WPM = 300
 SESSION_HOURS = 24
 RUN_TTL_MINUTES = 10
-DEV_EXPOSE_VERIFICATION_CODE = os.getenv('DEV_EXPOSE_VERIFICATION_CODE', '').strip().lower() in {'1', 'true', 'yes'}
+DEV_EXPOSE_VERIFICATION_CODE = True
 
 
 def utc_now_iso() -> str:
@@ -671,21 +671,26 @@ class AppHandler(http.server.SimpleHTTPRequestHandler):
 		self._send_json(200, {'ok': True, 'progressions': progressions})
 
 	def _handle_get_league_modifiers(self):
-		# Rotate modifiers weekly based on week number
-		import calendar
+		# Rotate global modifiers weekly based on week number
 		now = datetime.now(timezone.utc)
 		week = now.isocalendar()[1]
 
-		modifiers = {
-			'epl': {'name': 'Speed Blitz', 'effect': 'timer reduced by 10%'} if week % 3 == 0 else {'name': 'Precision Challenge', 'effect': 'penalties doubled'},
-			'laliga': {'name': 'Endurance Mode', 'effect': 'long modes favored'} if week % 3 == 1 else {'name': 'Accuracy Focused', 'effect': 'higher min accuracy needed'},
-			'seriea': {'name': 'Consistency Run', 'effect': 'fewer errors = bonus XP'} if week % 3 == 2 else {'name': 'Combo Scoring', 'effect': 'chain accuracy for multiplier'},
-			'bundesliga': {'name': 'Power Hour', 'effect': '+5% WPM baseline'} if week % 3 == 0 else {'name': 'Hard Difficulty Only', 'effect': 'play hard to earn 1.5x XP'},
-			'ligue1': {'name': 'Night Mode', 'effect': 'visual theme changes'} if week % 3 == 1 else {'name': 'Team Bonus', 'effect': 'club members +10% XP'},
-			'cyprus': {'name': 'Speed Wars', 'effect': 'fastest time wins'} if week % 3 == 2 else {'name': 'Accuracy Race', 'effect': 'highest accuracy leading'},
-			'greece': {'name': 'Veteran Challenge', 'effect': 'medium+ only'} if week % 3 == 0 else {'name': 'Extreme Mode', 'effect': 'hard+ only'},
-			'iran': {'name': 'Legendary Run', 'effect': '+50% XP all runs'} if week % 3 == 1 else {'name': 'Supreme Focus', 'effect': 'leaderboard-only scores count'},
-		}
+		all_possible_modifiers = [
+			{'name': 'Speed Blitz', 'effect': 'timer reduced by 10%'},
+			{'name': 'Precision Challenge', 'effect': 'penalties doubled'},
+			{'name': 'Endurance Mode', 'effect': 'long modes favored'},
+			{'name': 'Accuracy Focused', 'effect': 'higher min accuracy needed'},
+			{'name': 'Consistency Run', 'effect': 'fewer errors = bonus XP'},
+			{'name': 'Combo Scoring', 'effect': 'chain accuracy for multiplier'},
+			{'name': 'Power Hour', 'effect': '+5% WPM baseline'},
+			{'name': 'Hard Difficulty Only', 'effect': 'play hard to earn 1.5x XP'},
+		]
+
+		modifiers = [
+			all_possible_modifiers[(week) % len(all_possible_modifiers)],
+			all_possible_modifiers[(week + 1) % len(all_possible_modifiers)],
+			all_possible_modifiers[(week + 2) % len(all_possible_modifiers)],
+		]
 
 		self._send_json(200, {'ok': True, 'modifiers': modifiers, 'weekNumber': week})
 

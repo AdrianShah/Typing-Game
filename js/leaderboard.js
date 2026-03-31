@@ -189,16 +189,16 @@ export function fetchLeagueModifiers() {
             }
 
             if (!response.ok) {
-                return { ok: false, modifiers: {}, weekNumber: 0 };
+                return { ok: false, modifiers: [], weekNumber: 0 };
             }
 
             return {
                 ok: true,
-                modifiers: data.modifiers || {},
+                modifiers: data.modifiers || [],
                 weekNumber: data.weekNumber || 0
             };
         })
-        .catch(() => ({ ok: false, modifiers: {}, weekNumber: 0 }));
+        .catch(() => ({ ok: false, modifiers: [], weekNumber: 0 }));
 }
 
 

@@ -130,7 +130,8 @@ function setupHeaderDropdowns() {
             registrationState = 'verifying';
             const devCode = result.data?.devVerificationCode;
             if (devCode) {
-                alert('Registered. Dev verification code: ' + devCode);
+                document.getElementById('login-code').value = devCode;
+                alert('No proper email provider hooked up yet: verification code auto-filled.');
             } else {
                 alert('Registered. Check your email for verification code.');
             }
@@ -384,15 +385,19 @@ async function renderScreen(screenId) {
             if (result.ok && result.modifiers) {
                 const modifiersEl = document.getElementById('league-modifiers');
                 if (modifiersEl) {
-                    const modHTML = Object.entries(result.modifiers)
-                        .slice(0, 4)
-                        .map(([leagueId, mod]) => `
-                            <div class="inline-block bg-[#1C1B1B] border border-[#E9C176]/30 rounded-lg px-4 py-2 mr-3 mb-2">
-                                <span class="text-[9px] text-[#E9C176] font-bold uppercase tracking-wider">${mod.name}:</span>
-                                <span class="text-[9px] text-[#8A9389] ml-2">${mod.effect}</span>
+                    const modHTML = result.modifiers
+                        .map((mod) => `
+                            <div class="flex-1 bg-[#1C1B1B] border border-[#E9C176]/30 rounded-lg px-4 py-3 flex items-center min-w-[200px]">
+                                <span class="text-[10px] text-[#E9C176] font-bold uppercase tracking-wider whitespace-nowrap">${mod.name}:</span>
+                                <span class="text-[10px] text-[#8A9389] ml-2 truncate">${mod.effect}</span>
                             </div>
                         `).join('');
-                    modifiersEl.innerHTML = `<p class="text-[10px] text-[#8A9389] uppercase tracking-widest font-bold mb-3">This Week's Modifiers</p>${modHTML}`;
+                    modifiersEl.innerHTML = `
+                        <p class="text-[10px] text-[#8A9389] uppercase tracking-widest font-bold mb-3">This Week's Modifiers</p>
+                        <div class="flex flex-row overflow-x-auto gap-3 w-full hide-scrollbar">
+                            ${modHTML}
+                        </div>
+                    `;
                 }
             }
         });
