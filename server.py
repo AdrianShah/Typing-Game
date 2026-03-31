@@ -46,6 +46,10 @@ def send_verification_email(to_email: str, code: str) -> bool:
 		req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
 		with urllib.request.urlopen(req) as response:
 			return response.getcode() == 200
+	except urllib.error.HTTPError as e:
+		error_body = e.read().decode('utf-8')
+		print(f"Failed to send email via Resend (HTTP {e.code}): {error_body}")
+		return False
 	except Exception as e:
 		print(f"Failed to send email via Resend: {e}")
 		return False
@@ -320,8 +324,17 @@ class AppHandler(http.server.SimpleHTTPRequestHandler):
 			return
 
 		print(f'[verification] {email} -> {verification_code}')
-		send_verification_email(email, verification_code)
+		email_sent = send_verification_email(email, verification_code)
 		
+		if not email_sent:
+			self._send_json(
+				500,
+				{
+					'error': 'Failed to send verification email. In Resend free tier, you can only send emails TO your own verified email address. Check server logs for details.',
+				},
+			)
+			return
+
 		self._send_json(
 			200,
 			{
