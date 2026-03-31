@@ -133,7 +133,7 @@ function setupHeaderDropdowns() {
                 document.getElementById('login-code').value = devCode;
                 alert('No proper email provider hooked up yet: verification code auto-filled.');
             } else {
-                alert('Registered. Check your email for verification code.');
+                alert('Verification email sent! Please check your inbox (including spam folder).');
             }
 
             // Show verification code input

@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+import urllib.request
 import os
 
 HOST = '0.0.0.0'
@@ -20,8 +21,34 @@ MAX_CPS = 22
 MAX_NET_WPM = 300
 SESSION_HOURS = 24
 RUN_TTL_MINUTES = 10
-DEV_EXPOSE_VERIFICATION_CODE = True
+DEV_EXPOSE_VERIFICATION_CODE = False
 
+
+def send_verification_email(to_email: str, code: str) -> bool:
+	resend_key = os.environ.get('RESEND_API_KEY')
+	if not resend_key:
+		print("Warning: RESEND_API_KEY environment variable not set.")
+		return False
+
+	url = "https://api.resend.com/emails"
+	headers = {
+		"Authorization": f"Bearer {resend_key}",
+		"Content-Type": "application/json"
+	}
+	payload = json.dumps({
+		"from": "Acme <onboarding@resend.dev>",
+		"to": [to_email],
+		"subject": "Your Typing Game Verification Code",
+		"html": f"<p>Your verification code is: <strong>{code}</strong></p>"
+	}).encode('utf-8')
+
+	try:
+		req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+		with urllib.request.urlopen(req) as response:
+			return response.getcode() == 200
+	except Exception as e:
+		print(f"Failed to send email via Resend: {e}")
+		return False
 
 def utc_now_iso() -> str:
 	return datetime.now(timezone.utc).isoformat()
@@ -293,11 +320,13 @@ class AppHandler(http.server.SimpleHTTPRequestHandler):
 			return
 
 		print(f'[verification] {email} -> {verification_code}')
+		send_verification_email(email, verification_code)
+		
 		self._send_json(
 			200,
 			{
 				'ok': True,
-				'message': 'Verification code generated. Check your email (or server logs in local dev).',
+				'message': 'Verification code generated. Check your email.',
 			},
 		)
 
