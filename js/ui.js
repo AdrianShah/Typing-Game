@@ -1,25 +1,333 @@
-// UI Controller
 import { initEngine, resetGame, startGame, handleKeystroke, gameState } from './engine.js';
 import { calculateGrossWPM, calculateNetWPM, calculateAccuracy } from './metrics.js';
-import { LEAGUES, getTeamsByLeague, TEAMS } from './teams.js';
+import { CONTINENTS, COUNTRIES, getCountriesByContinent, getCountryById, getContinentById, getCountryFlagEmoji } from './countries.js';
 import { loadSettings, saveSettings } from './storage.js';
-import { fetchLeaderboard, submitResult, startServerRun, fetchClubProgression, fetchLeagueModifiers } from './leaderboard.js';
-import {
-    getCurrentUser,
-    loginWithEmailPassword,
-    logout,
-    registerWithEmailPassword,
-    subscribeAuth,
-    verifyEmailCode,
-    setupProfile
-} from './auth.js';
+import { fetchLeaderboard, submitResult, startServerRun, fetchCountryProgression, fetchCountryModifiers } from './leaderboard.js';
+import { getCurrentUser, loginWithClerk, logout, setupProfile, subscribeAuth } from './auth.js';
 
-let selectedTeamId = null;
-const AVAILABLE_MODES = [15, 30, 60, 120];
+let selectedCountryId = null;
+let currentContinentId = CONTINENTS[0]?.id || 'concacaf';
 let authUnsubscribe = null;
 let activeRunId = null;
 let gameStarted = false;
-let registrationState = null; // null | 'registering' | 'verifying' | null
+
+const AVAILABLE_MODES = [15, 30, 60, 120];
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function getSelectedCountryLabel() {
+    const country = getCountryById(selectedCountryId);
+    if (!country) return 'Solo Agent';
+    return `${getCountryFlagEmoji(country.code)} ${country.name}`;
+}
+
+function getSelectedCountryName() {
+    const country = getCountryById(selectedCountryId);
+    return country ? country.name : 'Solo Agent';
+}
+
+function getPlayerAvatar(user) {
+    return user?.avatarUrl || 'https://cdn.discordapp.com/embed/avatars/0.png';
+}
+
+function updateNavActive(screenId) {
+    document.querySelectorAll('.nav-btn').forEach((btn) => {
+        btn.classList.remove('text-[#93D6A0]', 'border-[#004B23]');
+        btn.classList.add('text-[#8A9389]', 'border-transparent');
+    });
+
+    const activeBtn = document.getElementById(`nav-${screenId}`);
+    if (activeBtn) {
+        activeBtn.classList.remove('text-[#8A9389]', 'border-transparent');
+        activeBtn.classList.add('text-[#93D6A0]', 'border-[#004B23]');
+    }
+}
+
+function setupNavigation() {
+    ['play', 'countries', 'leaderboard'].forEach((id) => {
+        const btn = document.getElementById(`nav-${id}`);
+        if (btn) btn.addEventListener('click', () => renderScreen(id));
+    });
+
+    ['play', 'countries', 'leaderboard'].forEach((id) => {
+        const btn = document.getElementById(`nav-mob-${id}`);
+        if (btn) btn.addEventListener('click', () => renderScreen(id));
+    });
+}
+
+function setupHeaderDropdowns() {
+    const notifBtn = document.getElementById('notification-btn');
+    const notifSidebar = document.getElementById('notification-sidebar');
+    const notifCloseBtn = document.getElementById('notification-close-btn');
+    const profileRoot = document.getElementById('profile-action-root');
+
+    let profileMenuEl = null;
+
+    const setNotificationsOpen = (isOpen) => {
+        if (!notifSidebar) return;
+        notifSidebar.classList.toggle('translate-x-full', !isOpen);
+        notifSidebar.classList.toggle('translate-x-0', isOpen);
+    };
+
+    const renderSignedOutButton = () => {
+        if (!profileRoot) return;
+        profileRoot.classList.remove('hidden');
+        profileRoot.innerHTML = `
+            <button id="btn-login-clerk" class="bg-[#004B23] text-white font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-2.5 px-4 rounded-md hover:bg-[#005a2b] transition-all duration-300" type="button">
+                Sign In
+            </button>
+        `;
+
+        const loginButton = document.getElementById('btn-login-clerk');
+        if (!loginButton) return;
+        loginButton.addEventListener('click', async () => {
+            const result = await loginWithClerk();
+            if (!result.ok) {
+                alert(result.error);
+            }
+        });
+    };
+
+    const renderProfileAction = async () => {
+        const user = getCurrentUser();
+
+        if (!profileRoot) return;
+
+        if (user) {
+            const displayName = user.player || user.username || user.email || 'Player';
+            const initial = String(displayName).trim().charAt(0).toUpperCase() || 'P';
+            const avatarUrl = getPlayerAvatar(user);
+
+            profileRoot.classList.remove('hidden');
+            profileRoot.innerHTML = `
+                <div class="relative">
+                    <button id="profile-menu-btn" class="w-10 h-10 rounded-full border border-[#E9C176]/40 overflow-hidden relative bg-[#2A2A2A] hover:border-[#E9C176] transition-colors" type="button" aria-label="Open profile menu" title="${escapeHtml(displayName)}">
+                        <img src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayName)}" class="w-full h-full object-cover" />
+                        <span class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#004B23] text-white text-[10px] font-black flex items-center justify-center border border-[#1C1B1B]">${escapeHtml(initial)}</span>
+                    </button>
+                    <div id="profile-menu" class="hidden absolute right-0 mt-2 w-52 bg-[#1C1B1B] border border-[#404941]/40 rounded-lg shadow-2xl z-[70] p-3">
+                        <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">Signed in as</p>
+                        <p class="text-sm text-[#E0E0E0] truncate mt-1">${escapeHtml(displayName)}</p>
+                        <div class="mt-3 flex flex-col gap-2">
+                            <button id="btn-edit-profile" class="w-full bg-[#131313] border border-[#404941]/50 text-[#E0E0E0] font-headline font-bold uppercase tracking-[0.18em] text-[10px] py-2.5 rounded-md hover:bg-[#1A1A1A] transition-colors" type="button">
+                                Edit Profile
+                            </button>
+                            <button id="btn-logout-submit" class="w-full bg-[#2A2A2A] border border-[#404941]/50 text-[#E9C176] font-headline font-bold uppercase tracking-[0.18em] text-[10px] py-2.5 rounded-md hover:bg-[#333333] transition-colors" type="button">
+                                Sign Out
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const profileMenuBtn = document.getElementById('profile-menu-btn');
+            profileMenuEl = document.getElementById('profile-menu');
+            const editProfileBtn = document.getElementById('btn-edit-profile');
+            const logoutButton = document.getElementById('btn-logout-submit');
+
+            if (profileMenuBtn && profileMenuEl) {
+                profileMenuBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    profileMenuEl.classList.toggle('hidden');
+                });
+            }
+
+            if (editProfileBtn) {
+                editProfileBtn.addEventListener('click', () => {
+                    profileMenuEl.classList.add('hidden');
+                    showProfileSetupModal(false);
+                });
+            }
+
+            if (logoutButton) {
+                logoutButton.addEventListener('click', async () => {
+                    await logout();
+                    if (profileMenuEl) {
+                        profileMenuEl.classList.add('hidden');
+                    }
+                });
+            }
+
+            if (!user.profileComplete) {
+                setTimeout(() => {
+                    if (getCurrentUser()?.profileComplete === false) {
+                        showProfileSetupModal(true);
+                    }
+                }, 0);
+            }
+            return;
+        }
+
+        renderSignedOutButton();
+    };
+
+    notifBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const isOpen = notifSidebar?.classList.contains('translate-x-0');
+        setNotificationsOpen(!isOpen);
+        document.getElementById('notif-badge').classList.add('hidden');
+    });
+
+    if (notifCloseBtn) {
+        notifCloseBtn.addEventListener('click', () => setNotificationsOpen(false));
+    }
+
+    document.addEventListener('click', (event) => {
+        if (notifSidebar && !notifSidebar.contains(event.target) && !notifBtn.contains(event.target)) {
+            setNotificationsOpen(false);
+        }
+        if (profileMenuEl && !profileRoot.contains(event.target)) {
+            profileMenuEl.classList.add('hidden');
+        }
+    });
+
+    if (authUnsubscribe) {
+        authUnsubscribe();
+    }
+    authUnsubscribe = subscribeAuth(renderProfileAction);
+    renderProfileAction();
+}
+
+function showProfileSetupModal(isMandatory = false) {
+    const existingModal = document.getElementById('profile-setup-modal');
+    if (existingModal) existingModal.remove();
+
+    const user = getCurrentUser();
+    if (!user) return;
+
+    let selectedAvatarUrl = user.avatarUrl;
+
+    const getAvatarsForCountry = (countryName) => {
+        const base = countryName || 'Globe';
+        return [1, 2, 3, 4, 5].map(i => `https://api.dicebear.com/7.x/micah/svg?seed=${encodeURIComponent(base + '-' + i)}&backgroundColor=131313`);
+    };
+
+    const renderSecondaryAvatarList = (selectedUrl, countryName) => {
+        const avatars = getAvatarsForCountry(countryName);
+        if (!selectedUrl || !avatars.includes(selectedUrl)) {
+            selectedUrl = avatars[0];
+        }
+        selectedAvatarUrl = selectedUrl;
+        return avatars.map((url) => {
+            const isSelected = selectedAvatarUrl === url;
+            return `
+                <img 
+                    src="${url}" 
+                    class="avatar-option w-12 h-12 rounded-lg cursor-pointer transition-all border-2 ${isSelected ? 'border-[#E9C176] scale-110 shadow-[0_0_10px_rgba(233,193,118,0.4)]' : 'border-transparent hover:border-outline/30'}"
+                    data-url="${url}"
+                    alt="Avatar option"
+                />
+            `;
+        }).join('');
+    };
+
+    const sortedCountries = [...COUNTRIES].sort((a, b) => a.name.localeCompare(b.name));
+    const optionsHtml = sortedCountries.map((country) => {
+        const selected = user.country === country.name ? 'selected' : '';
+        return `<option value="${escapeHtml(country.name)}" ${selected}>${getCountryFlagEmoji(country.code)} ${escapeHtml(country.name)}</option>`;
+    }).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'profile-setup-modal';
+    modal.className = 'fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4';
+    modal.innerHTML = `
+        <div class="bg-[#1C1B1B] border border-[#E9C176]/40 rounded-xl p-8 max-w-md w-full space-y-6 block">
+            <h2 class="text-2xl font-headline font-black text-[#E9C176] uppercase tracking-tight">${isMandatory ? 'Complete Your Profile' : 'Edit Profile'}</h2>
+            <div class="space-y-2">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Username (Max once per 30 Days)</label>
+                <input id="profile-username" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all" placeholder="Choose your name" type="text" maxlength="40" value="${escapeHtml(user.player || '')}" />
+            </div>
+            <div class="space-y-2">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Country</label>
+                <select id="profile-country" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all">
+                    <option value="">Select a country</option>
+                    ${optionsHtml}
+                </select>
+            </div>
+            <div class="space-y-2">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Avatar (Max once per 1 Day)</label>
+                <div id="modal-avatar-list" class="flex items-center justify-between gap-2 py-2 w-full">
+                    ${renderSecondaryAvatarList(selectedAvatarUrl, user.country || '')}
+                </div>
+            </div>
+            <div class="grid ${isMandatory ? 'grid-cols-1' : 'grid-cols-2'} gap-2">
+                ${isMandatory ? '' : '<button id="profile-cancel-btn" class="w-full bg-[#1C1B1B] border border-outline/30 text-[#8A9389] font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#2A2A2A] transition-all" type="button">Cancel</button>'}
+                <button id="profile-save-btn" class="w-full bg-[#004B23] text-white font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#005a2b] transition-all" type="button">Save Profile</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const attachAvatarEvents = () => {
+        const avatarOptions = modal.querySelectorAll('.avatar-option');
+        avatarOptions.forEach(opt => {
+            opt.addEventListener('click', () => {
+                avatarOptions.forEach(o => {
+                    o.classList.remove('border-[#E9C176]', 'scale-110', 'shadow-[0_0_10px_rgba(233,193,118,0.4)]');
+                    o.classList.add('border-transparent', 'hover:border-outline/30');
+                });
+                opt.classList.remove('border-transparent', 'hover:border-outline/30');
+                opt.classList.add('border-[#E9C176]', 'scale-110', 'shadow-[0_0_10px_rgba(233,193,118,0.4)]');
+                selectedAvatarUrl = opt.dataset.url;
+            });
+        });
+    };
+    attachAvatarEvents();
+
+    const countrySelect = document.getElementById('profile-country');
+    countrySelect.addEventListener('change', () => {
+        const newCountry = countrySelect.value;
+        const avatarListEl = document.getElementById('modal-avatar-list');
+        // Country changes regenerate the avatar suggestions, so clear the previous selection before rendering the new list.
+        selectedAvatarUrl = null;
+        avatarListEl.innerHTML = renderSecondaryAvatarList(selectedAvatarUrl, newCountry);
+        attachAvatarEvents();
+    });
+
+    if (!isMandatory) {
+        document.getElementById('profile-cancel-btn').addEventListener('click', () => {
+            modal.remove();
+        });
+    }
+
+    document.getElementById('profile-save-btn').addEventListener('click', async () => {
+        const username = document.getElementById('profile-username').value.trim();
+        const avatarUrl = selectedAvatarUrl;
+        const country = document.getElementById('profile-country').value;
+
+        if (!username) {
+            alert('Please enter a username.');
+            return;
+        }
+        if (!country) {
+            alert('Please select a country.');
+            return;
+        }
+
+        const result = await setupProfile(username, user.icon, country, avatarUrl);
+        if (!result.ok) {
+            alert(result.error || 'Unable to save profile.');
+            return;
+        }
+
+        const matchedCountry = COUNTRIES.find((entry) => entry.name === country);
+        if (matchedCountry) {
+            selectedCountryId = matchedCountry.id;
+            saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
+        }
+
+        modal.remove();
+        setupHeaderDropdowns();
+    });
+}
 
 export function initUI() {
     const settings = loadSettings();
@@ -29,6 +337,7 @@ export function initUI() {
     if (['easy', 'medium', 'hard'].includes(settings.difficulty)) {
         gameState.difficulty = settings.difficulty;
     }
+    selectedCountryId = settings.defaultCountry || null;
 
     setupNavigation();
     setupHeaderDropdowns();
@@ -36,256 +345,25 @@ export function initUI() {
     document.addEventListener('keydown', onGlobalKeyDown);
 }
 
-function setupHeaderDropdowns() {
-    const notifBtn = document.getElementById('notification-btn');
-    const notifDrop = document.getElementById('notification-dropdown');
-    const profileBtn = document.getElementById('profile-btn');
-    const loginDrop = document.getElementById('login-dropdown');
-    const loginContainer = document.getElementById('login-container');
-
-    const syncProfileIndicator = () => {
-        const user = getCurrentUser();
-        if (user?.email) {
-            profileBtn.classList.add('ring-2', 'ring-[#93D6A0]', 'ring-offset-2', 'ring-offset-[#131313]');
-        } else {
-            profileBtn.classList.remove('ring-2', 'ring-[#93D6A0]', 'ring-offset-2', 'ring-offset-[#131313]');
-        }
-    };
-
-    const renderLoginContainer = () => {
-        const user = getCurrentUser();
-        syncProfileIndicator();
-
-        // If profile setup is needed, show modal instead of dropdown
-        if (user?.email && !user.profileComplete) {
-            showProfileSetupModal();
-            return;
-        }
-
-        if (user?.email && user.profileComplete) {
-            const iconEmoji = {
-                'captain': '⚫',
-                'warrior': '🔴',
-                'sage': '🟠',
-                'guardian': '💛',
-                'mentor': '🟢'
-            }[user.icon] || '⚫';
-            
-            loginContainer.innerHTML = `
-                <div class="space-y-2">
-                    <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Captain</p>
-                    <p class="text-sm text-[#E0E0E0]">${iconEmoji} ${user.username || user.email}</p>
-                </div>
-                <button id="btn-logout-submit" class="w-full bg-[#1C1B1B] border border-[#E9C176]/30 text-[#E9C176] font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#2A2A2A] transition-all duration-300" type="button">
-                    Logout
-                </button>
-            `;
-
-            document.getElementById('btn-logout-submit').addEventListener('click', () => {
-                logout();
-                loginDrop.classList.add('hidden');
-            });
-            return;
-        }
-
-        // Show login/register form
-        loginContainer.innerHTML = `
-            <div class="space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant ml-0.5">Captain ID</label>
-                <input class="w-full bg-[#1C1B1B] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all duration-300" placeholder="Email Address" type="email" id="login-email" />
-            </div>
-            <div class="space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant ml-0.5">Password</label>
-                <input class="w-full bg-[#1C1B1B] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all duration-300" placeholder="Password" type="password" id="login-password" />
-                <p class="text-[10px] text-[#8A9389]">Min 6 chars</p>
-            </div>
-            <div class="grid grid-cols-1 gap-2">
-                <button id="btn-register-submit" class="w-full bg-[#004B23] text-white font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#005a2b] transition-all duration-300" type="button">
-                    Register
-                </button>
-                <button id="btn-login-submit" class="w-full bg-[#1C1B1B] border border-[#E9C176]/30 text-[#E9C176] font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#2A2A2A] transition-all duration-300" type="button">
-                    Login
-                </button>
-            </div>
-        `;
-
-        const regEmail = () => document.getElementById('login-email').value;
-        const regPassword = () => document.getElementById('login-password').value;
-
-        document.getElementById('btn-register-submit').addEventListener('click', async () => {
-            const btn = document.getElementById('btn-register-submit');
-            btn.innerHTML = 'Registering...';
-            btn.disabled = true;
-
-            const result = await registerWithEmailPassword(regEmail(), regPassword());
-            if (!result.ok) {
-                alert(result.error);
-                btn.innerHTML = 'Register';
-                btn.disabled = false;
-                return;
-            }
-
-            alert('Verification email sent! Please check your inbox (including spam folder). Once verified, you may Login.');
-            btn.innerHTML = 'Register';
-            btn.disabled = false;
-        });
-
-        document.getElementById('btn-login-submit').addEventListener('click', async () => {
-            const result = await loginWithEmailPassword(regEmail(), regPassword());
-            if (!result.ok) {
-                alert(result.error);
-                return;
-            }
-            loginDrop.classList.add('hidden');
-        });
-    };
-
-    notifBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        notifDrop.classList.toggle('hidden');
-        loginDrop.classList.add('hidden');
-        document.getElementById('notif-badge').classList.add('hidden');
-    });
-
-    profileBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        loginDrop.classList.toggle('hidden');
-        notifDrop.classList.add('hidden');
-    });
-
-    document.addEventListener('click', (e) => {
-        if(!notifDrop.contains(e.target)) notifDrop.classList.add('hidden');
-        if(!loginDrop.contains(e.target) && !profileBtn.contains(e.target)) loginDrop.classList.add('hidden');
-    });
-
-    if (authUnsubscribe) {
-        authUnsubscribe();
-    }
-    authUnsubscribe = subscribeAuth(renderLoginContainer);
-    renderLoginContainer();
-}
-
-function showProfileSetupModal() {
-    const icons = ['captain', 'warrior', 'sage', 'guardian', 'mentor'];
-    const iconEmojis = {
-        'captain': '⚫',
-        'warrior': '🔴',
-        'sage': '🟠',
-        'guardian': '💛',
-        'mentor': '🟢'
-    };
-
-    const modal = document.createElement('div');
-    modal.id = 'profile-setup-modal';
-    modal.className = 'fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4';
-    modal.innerHTML = `
-        <div class="bg-[#1C1B1B] border border-[#E9C176]/40 rounded-xl p-8 max-w-md w-full">
-            <h2 class="text-2xl font-headline font-black text-[#E9C176] mb-6 uppercase tracking-tight">Complete Your Profile</h2>
-            
-            <div class="space-y-4 mb-6">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Captain Name</label>
-                <input id="profile-username" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all" placeholder="Choose your name" type="text" maxlength="50" />
-            </div>
-
-            <div class="space-y-3 mb-6">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Choose Your Icon</label>
-                <div class="grid grid-cols-5 gap-2">
-                    ${icons.map(icon => `
-                        <button class="profile-icon-btn p-3 rounded-lg border border-outline/20 hover:border-[#E9C176]/50 transition-all" data-icon="${icon}">
-                            <span class="text-2xl">${iconEmojis[icon]}</span>
-                        </button>
-                    `).join('')}
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 gap-2">
-                <button id="profile-save-btn" class="w-full bg-[#004B23] text-white font-headline font-bold uppercase tracking-[0.2em] text-[10px] py-3 hover:bg-[#005a2b] transition-all">
-                    Save Profile
-                </button>
-            </div>
-        </div>
-    `;
-
-    document.body.appendChild(modal);
-
-    let selectedIcon = 'captain';
-
-    document.querySelectorAll('.profile-icon-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            document.querySelectorAll('.profile-icon-btn').forEach(b => b.classList.remove('border-[#E9C176]', 'bg-[#004B23]/30'));
-            const icon = btn.getAttribute('data-icon');
-            selectedIcon = icon;
-            btn.classList.add('border-[#E9C176]', 'bg-[#004B23]/30');
-        });
-    });
-
-    // Set default as selected
-    document.querySelector(`[data-icon="captain"]`).classList.add('border-[#E9C176]', 'bg-[#004B23]/30');
-
-    document.getElementById('profile-save-btn').addEventListener('click', async () => {
-        const username = document.getElementById('profile-username').value.trim();
-        if (!username) {
-            alert('Please enter a username.');
-            return;
-        }
-
-        const result = await setupProfile(username, selectedIcon);
-        if (!result.ok) {
-            alert(result.error);
-            return;
-        }
-
-        modal.remove();
-        // Refresh the header dropdown
-        setupHeaderDropdowns();
-    });
-}
-
-function updateNavActive(screenId) {
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.classList.remove('text-[#93D6A0]', 'border-[#004B23]');
-        btn.classList.add('text-[#8A9389]', 'border-transparent');
-    });
-    const activeBtn = document.getElementById(`nav-${screenId}`);
-    if (activeBtn) {
-        activeBtn.classList.remove('text-[#8A9389]', 'border-transparent');
-        activeBtn.classList.add('text-[#93D6A0]', 'border-[#004B23]');
-    }
-}
-
-function setupNavigation() {
-    ['play', 'teams', 'leaderboard'].forEach(id => {
-        const btn = document.getElementById(`nav-${id}`);
-        if(btn) btn.addEventListener('click', () => renderScreen(id));
-    });
-    ['play', 'teams', 'leaderboard'].forEach(id => {
-        const btn = document.getElementById(`nav-mob-${id}`);
-        if(btn) btn.addEventListener('click', () => renderScreen(id));
-    });
-}
-
 async function renderScreen(screenId) {
     updateNavActive(screenId);
     const main = document.getElementById('main-content');
-    
+
     if (screenId === 'play') {
-        const teamName = selectedTeamId ? TEAMS.find(t=>t.id===selectedTeamId)?.name : 'Solo Agent';
+        const playerLabel = getSelectedCountryLabel();
         const modeButtonsHtml = AVAILABLE_MODES.map((mode) => `
-            <button class="mode-btn text-[10px] font-bold uppercase tracking-widest ${gameState.mode===mode?'text-[#E9C176]':'text-[#8A9389]'}" data-mode="${mode}">${mode}s</button>
+            <button class="mode-btn text-[10px] font-bold uppercase tracking-widest ${gameState.mode === mode ? 'text-[#E9C176]' : 'text-[#8A9389]'}" data-mode="${mode}">${mode}s</button>
         `).join('');
 
         main.innerHTML = `
-            <!-- League Modifiers -->
-            <section id="league-modifiers" class="w-full mb-12 px-2"></section>
+            <section id="country-modifiers" class="w-full mb-12 px-2"></section>
 
-            <!-- Live Pitch Progress -->
             <section class="w-full mb-16 space-y-4">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 w-full mb-3 px-2">
                     <div class="flex gap-4">
-                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty==='easy'?'text-[#E9C176]':'text-[#8A9389]'}" data-diff="easy">Easy</button>
-                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty==='medium'?'text-[#E9C176]':'text-[#8A9389]'}" data-diff="medium">Medium</button>
-                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty==='hard'?'text-[#E9C176]':'text-[#8A9389]'}" data-diff="hard">Hard</button>
+                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty === 'easy' ? 'text-[#E9C176]' : 'text-[#8A9389]'}" data-diff="easy">Easy</button>
+                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty === 'medium' ? 'text-[#E9C176]' : 'text-[#8A9389]'}" data-diff="medium">Medium</button>
+                        <button class="diff-btn text-[10px] font-bold uppercase tracking-widest ${gameState.difficulty === 'hard' ? 'text-[#E9C176]' : 'text-[#8A9389]'}" data-diff="hard">Hard</button>
                     </div>
                     <div class="flex gap-4">
                         ${modeButtonsHtml}
@@ -300,18 +378,17 @@ async function renderScreen(screenId) {
                         <div class="h-full border-l border-on-surface"></div>
                         <div class="h-full border-l border-on-surface"></div>
                     </div>
-                    
+
                     <div class="relative w-full h-6 flex items-center mb-1 mt-5">
                         <div class="h-px w-full bg-outline/20 absolute"></div>
                         <div id="player-progress" class="absolute left-[0%] flex items-center gap-2 transition-all duration-300 ease-out z-10">
-                            <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm">${teamName}</span>
-                            <span class="material-symbols-outlined text-secondary text-base" style="font-variation-settings: 'FILL' 1;">sports_soccer</span>
+                            <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm">${escapeHtml(playerLabel)}</span>
+                            <span class="material-symbols-outlined text-secondary text-base" style="font-variation-settings: 'FILL' 1;">public</span>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- Stats Dashboard -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-8 w-full mb-16">
                 <div class="bg-surface-container-low/40 p-8 rounded-lg flex flex-col items-center justify-center border border-outline/5">
                     <span class="text-[10px] font-['Manrope'] font-bold tracking-[0.3em] text-on-surface-variant uppercase mb-3">Time</span>
@@ -336,12 +413,10 @@ async function renderScreen(screenId) {
                 </div>
             </div>
 
-            <!-- Typing Arena -->
             <div class="w-full max-w-4xl bg-surface-container-low/30 p-12 rounded-lg backdrop-blur-md relative border border-outline/10 overflow-hidden">
                 <div id="word-display-area" class="text-2xl md:text-3xl leading-[1.8] font-body text-on-surface-variant select-none tracking-wide text-center flex flex-wrap justify-center gap-1"></div>
             </div>
 
-            <!-- Action Area -->
             <div class="mt-16 flex gap-6">
                 <button id="start-btn" class="${gameStarted ? 'hidden' : ''} bg-[#004B23] text-white font-bold px-10 py-3.5 rounded-sm hover:brightness-125 active:scale-[0.98] transition-all duration-300 uppercase tracking-[0.2em] text-[11px] font-label border border-secondary/20">
                     Start Match
@@ -351,74 +426,75 @@ async function renderScreen(screenId) {
                 </button>
             </div>
         `;
+
         activeRunId = null;
         gameStarted = false;
         resetGame(gameState.mode, gameState.difficulty);
         bindPlayEvents();
         updateWordDisplay();
 
-        // Load and display league modifiers
-        fetchLeagueModifiers().then((result) => {
-            if (result.ok && result.modifiers) {
-                const modifiersEl = document.getElementById('league-modifiers');
-                if (modifiersEl) {
-                    const modHTML = result.modifiers
-                        .map((mod) => `
-                            <div class="flex-1 bg-[#1C1B1B] border border-[#E9C176]/30 rounded-lg px-4 py-3 flex items-center min-w-[200px]">
-                                <span class="text-[10px] text-[#E9C176] font-bold uppercase tracking-wider whitespace-nowrap">${mod.name}:</span>
-                                <span class="text-[10px] text-[#8A9389] ml-2 truncate">${mod.effect}</span>
-                            </div>
-                        `).join('');
-                    modifiersEl.innerHTML = `
-                        <p class="text-[10px] text-[#8A9389] uppercase tracking-widest font-bold mb-3">This Week's Modifiers</p>
-                        <div class="flex flex-row overflow-x-auto gap-3 w-full hide-scrollbar">
-                            ${modHTML}
-                        </div>
-                    `;
-                }
-            }
+        fetchCountryModifiers().then((result) => {
+            if (!result.ok || !result.modifiers) return;
+            const modifiersEl = document.getElementById('country-modifiers');
+            if (!modifiersEl) return;
+
+            const modHTML = result.modifiers
+                .map((modifier) => `
+                    <div class="flex-1 bg-[#1C1B1B] border border-[#E9C176]/30 rounded-lg px-4 py-3 flex items-center min-w-[200px]">
+                        <span class="text-[10px] text-[#E9C176] font-bold uppercase tracking-wider whitespace-nowrap">${escapeHtml(modifier.name)}:</span>
+                        <span class="text-[10px] text-[#8A9389] ml-2 truncate">${escapeHtml(modifier.effect)}</span>
+                    </div>
+                `)
+                .join('');
+
+            modifiersEl.innerHTML = `
+                <p class="text-[10px] text-[#8A9389] uppercase tracking-widest font-bold mb-3">This Week's Route Modifiers</p>
+                <div class="flex flex-row overflow-x-auto gap-3 w-full hide-scrollbar">
+                    ${modHTML}
+                </div>
+            `;
         });
-    } else if (screenId === 'teams') {
-        const leaguesHtml = Object.values(LEAGUES).map(l => 
-            `<button class="league-tab bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-8 py-4 rounded-lg whitespace-nowrap uppercase transition-all" data-league="${l.id}">${l.name}</button>`
-        ).join('');
-        
+    } else if (screenId === 'countries') {
+        const continentTabsHtml = CONTINENTS.map((continent) => `
+            <button class="continent-tab bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-8 py-4 rounded-lg whitespace-nowrap uppercase transition-all ${continent.id === currentContinentId ? 'bg-[#004B23] text-white' : ''}" data-continent="${continent.id}">${continent.name}</button>
+        `).join('');
+
         main.innerHTML = `
             <div class="mb-16 flex flex-col md:flex-row md:items-end justify-between gap-8 w-full">
                 <div>
                     <span class="text-on-surface-variant font-headline font-semibold text-xs tracking-[0.3em] uppercase">Recruitment Phase</span>
-                    <h1 class="text-4xl md:text-6xl font-headline font-bold tracking-tight mt-3 text-on-surface uppercase">Select Your <span class="text-[#E9C176]">Club</span></h1>
+                    <h1 class="text-4xl md:text-6xl font-headline font-bold tracking-tight mt-3 text-on-surface uppercase">Select Your <span class="text-[#E9C176]">Country</span></h1>
                 </div>
-            </div>
-            
-            <div class="flex gap-3 overflow-x-auto pb-4 w-full scrollbar-hide mb-8">
-                ${leaguesHtml}
             </div>
 
-            <div id="team-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 w-full"></div>
+            <div class="flex gap-3 overflow-x-auto pb-4 w-full scrollbar-hide mb-8">
+                ${continentTabsHtml}
+            </div>
+
+            <div id="country-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 w-full"></div>
         `;
-        
-        document.querySelectorAll('.league-tab').forEach(tab => {
-            tab.addEventListener('click', (e) => {
-                const leagueId = e.target.getAttribute('data-league');
-                renderTeams(leagueId);
+
+        document.querySelectorAll('.continent-tab').forEach((tab) => {
+            tab.addEventListener('click', (event) => {
+                const continentId = event.currentTarget.getAttribute('data-continent');
+                currentContinentId = continentId;
+                renderCountries(continentId);
             });
         });
-        
-        // Wait for next tick to adjust scrolling on the newly created flex container if needed
-        setTimeout(() => renderTeams('epl'), 0);
+
+        await renderCountries(currentContinentId);
     } else if (screenId === 'leaderboard') {
         main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading leaderboard...</div>';
-        const board = await fetchLeaderboard();
-        let rows = board.map((entry, idx) => `
-            <div class="grid grid-cols-12 px-10 py-6 items-center hover:bg-[#201F1F] transition-all duration-300 border-b border-outline/5 ${idx%2===0 ? '' : 'bg-[#181818]'}">
-                <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${(idx + 1).toString().padStart(2, '0')}</div>
+        const board = await fetchLeaderboard(gameState.mode, gameState.difficulty);
+        const rows = (board.list || []).map((entry, index) => `
+            <div class="grid grid-cols-12 px-10 py-6 items-center hover:bg-[#201F1F] transition-all duration-300 border-b border-outline/5 ${index % 2 === 0 ? '' : 'bg-[#181818]'}">
+                <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${String(index + 1).padStart(2, '0')}</div>
                 <div class="col-span-6 flex flex-col justify-center">
-                    <div class="font-bold text-base text-[#E0E0E0]">${entry.team || 'Agent'}</div>
-                    <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">${entry.player} • ${entry.mode}s • ${entry.difficulty}</div>
+                    <div class="font-bold text-base text-[#E0E0E0]">${escapeHtml(entry.country || 'Agent')}</div>
+                    <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">${escapeHtml(entry.player || 'anonymous')} • ${entry.mode}s • ${escapeHtml(entry.difficulty)}</div>
                 </div>
-                <div class="col-span-3 text-center text-sm font-bold text-[#93D6A0]">${entry.acc.toFixed(1)}%</div>
-                <div class="col-span-2 text-right font-headline font-black text-2xl text-[#E9C176]">${Math.round(entry.netWPM)}</div>
+                <div class="col-span-3 text-center text-sm font-bold text-[#93D6A0]">${Number(entry.acc || 0).toFixed(1)}%</div>
+                <div class="col-span-2 text-right font-headline font-black text-2xl text-[#E9C176]">${Math.round(Number(entry.netWPM || 0))}</div>
             </div>
         `).join('');
 
@@ -427,10 +503,10 @@ async function renderScreen(screenId) {
                 <div>
                     <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">Global Rankings</span>
                     <h1 class="text-6xl font-headline font-black tracking-tight mt-2 text-[#E9C176]">Leaderboard</h1>
-                    <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">*Only Solo runs qualify for placement</p>
+                    <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">Top 10 runs for the selected mode</p>
                 </div>
             </div>
-            
+
             <div class="bg-[#1C1B1B] border border-outline/10 rounded-2xl overflow-hidden shadow-xl w-full">
                 <div class="grid grid-cols-12 px-10 py-6 border-b border-outline/10 text-[10px] uppercase tracking-[0.3em] font-black text-[#8A9389]">
                     <div class="col-span-1">Rank</div>
@@ -439,93 +515,85 @@ async function renderScreen(screenId) {
                     <div class="col-span-2 text-right">Avg WPM</div>
                 </div>
                 <div class="flex flex-col">
-                    ${rows || '<div class="p-8 text-center text-[#8A9389]">No solo entries yet. Hit the Arena!</div>'}
+                    ${rows || '<div class="p-8 text-center text-[#8A9389]">No results yet. Start a match.</div>'}
                 </div>
             </div>
         `;
     }
 }
 
-function renderTeams(leagueId) {
-    const grid = document.getElementById('team-grid');
+async function renderCountries(continentId) {
+    const grid = document.getElementById('country-grid');
     if (!grid) return;
-    
-    document.querySelectorAll('.league-tab').forEach(tab => {
-        if(tab.getAttribute('data-league') === leagueId) {
-            tab.classList.replace('bg-surface-container-high', 'bg-[#004B23]');
-            tab.classList.add('text-white');
-        } else {
-            tab.classList.replace('bg-[#004B23]', 'bg-surface-container-high');
-            tab.classList.remove('text-white');
-        }
-    });
-    
-    const teams = getTeamsByLeague(leagueId);
-    
-    // Fetch club progression for the current user
-    fetchClubProgression().then((progressResult) => {
-        const progressMap = {};
-        if (progressResult.ok && Array.isArray(progressResult.progressions)) {
-            progressResult.progressions.forEach(p => {
-                progressMap[p.teamId] = p;
-            });
-        }
 
-        grid.innerHTML = teams.map(t => {
-            const isSelected = t.id === selectedTeamId;
-            const encodedName = encodeURIComponent(t.name);
-            const avatarUrl = `https://ui-avatars.com/api/?name=${encodedName}&background=2A2A2A&color=E9C176&size=80&rounded=true&bold=true&format=svg`;
-            const progress = progressMap[t.id];
-            const progressDisplay = progress ? `<small class="text-[#93D6A0] text-[8px] uppercase tracking-widest">Level ${progress.level} • ${progress.xp} XP</small>` : '';
-            
-            return `
-                <div class="team-card group relative overflow-hidden rounded-xl p-8 border transition-all duration-500 cursor-pointer ${isSelected ? 'bg-[#201F1F] border-[#E9C176]/50 shadow-[0_10px_30px_rgba(0,0,0,0.3)]' : 'bg-surface-container-low border-outline/5 hover:border-[#E9C176]/20 hover:bg-[#201F1F]'}" data-team="${t.id}">
-                    ${isSelected ? '<div class="absolute top-6 right-6"><span class="material-symbols-outlined text-[#E9C176] text-xl" style="font-variation-settings: \'FILL\' 1;">check_circle</span></div>' : ''}
-                    <div class="flex flex-col h-full">
-                        <div class="mb-10 w-20 h-20 bg-[#2A2A2A] rounded-full flex items-center justify-center border border-outline/10 overflow-hidden ${isSelected ? 'border-[#E9C176]/50 shadow-[0_0_15px_rgba(233,193,118,0.2)]' : 'group-hover:border-[#E9C176]/50'}">
-                            <img src="${avatarUrl}" alt="${t.name} Logo" class="w-full h-full object-cover opacity-80 ${isSelected ? 'opacity-100' : 'group-hover:opacity-100 transition-opacity'}">
-                        </div>
-                        <div class="mt-auto">
-                            <span class="text-[#8A9389] font-semibold text-[10px] tracking-[0.2em] uppercase">${LEAGUES[leagueId].name}</span>
-                            <h3 class="text-xl font-bold mt-2 uppercase tracking-tight ${isSelected ? 'text-[#E9C176]' : 'text-[#E0E0E0] group-hover:text-[#E9C176]'}">${t.name}</h3>
-                            <div class="mt-2">${progressDisplay}</div>
-                        </div>
+    document.querySelectorAll('.continent-tab').forEach((tab) => {
+        const isActive = tab.getAttribute('data-continent') === continentId;
+        tab.classList.toggle('bg-[#004B23]', isActive);
+        tab.classList.toggle('text-white', isActive);
+    });
+
+    const countries = getCountriesByContinent(continentId);
+    const currentUser = getCurrentUser();
+    const progressionResult = await fetchCountryProgression(currentUser?.uid);
+    const progressionMap = new Map((progressionResult.progressions || []).map((progression) => [progression.countryId, progression]));
+
+    grid.innerHTML = countries.map((country) => {
+        const isSelected = country.id === selectedCountryId;
+        const flag = getCountryFlagEmoji(country.code);
+        const progress = progressionMap.get(country.name);
+        const continent = getContinentById(country.continentId);
+        const progressDisplay = progress
+            ? `<div class="mt-2 text-[10px] text-[#93D6A0] uppercase tracking-widest">Level ${progress.level} • ${progress.xp} XP • ${progress.runs} runs</div>`
+            : '<div class="mt-2 text-[10px] text-[#8A9389] uppercase tracking-widest">No runs yet</div>';
+
+        return `
+            <div class="country-card group relative overflow-hidden rounded-xl p-8 border transition-all duration-500 cursor-pointer ${isSelected ? 'bg-[#201F1F] border-[#E9C176]/50 shadow-[0_10px_30px_rgba(0,0,0,0.3)]' : 'bg-surface-container-low border-outline/5 hover:border-[#E9C176]/20 hover:bg-[#201F1F]'}" data-country="${country.id}">
+                ${isSelected ? '<div class="absolute top-6 right-6"><span class="material-symbols-outlined text-[#E9C176] text-xl" style="font-variation-settings: \'FILL\' 1;">check_circle</span></div>' : ''}
+                <div class="flex flex-col h-full">
+                    <div class="mb-10 w-20 h-20 bg-[#2A2A2A] rounded-full flex items-center justify-center border border-outline/10 overflow-hidden ${isSelected ? 'border-[#E9C176]/50 shadow-[0_0_15px_rgba(233,193,118,0.2)]' : 'group-hover:border-[#E9C176]/50'} text-4xl">
+                        ${flag}
+                    </div>
+                    <div class="mt-auto">
+                        <span class="text-[#8A9389] font-semibold text-[10px] tracking-[0.2em] uppercase">${escapeHtml(continent?.name || '')}</span>
+                        <h3 class="text-xl font-bold mt-2 uppercase tracking-tight ${isSelected ? 'text-[#E9C176]' : 'text-[#E0E0E0] group-hover:text-[#E9C176]'}">${escapeHtml(country.name)}</h3>
+                        ${progressDisplay}
                     </div>
                 </div>
-            `;
-        }).join('');
-        
-        document.querySelectorAll('.team-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                selectedTeamId = e.currentTarget.getAttribute('data-team');
-                renderTeams(leagueId); // re-render to update selected state
-            });
+            </div>
+        `;
+    }).join('');
+
+    document.querySelectorAll('.country-card').forEach((card) => {
+        card.addEventListener('click', (event) => {
+            selectedCountryId = event.currentTarget.getAttribute('data-country');
+            saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
+            renderCountries(continentId);
         });
     });
 }
 
 function bindPlayEvents() {
-    document.querySelectorAll('.diff-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            if (gameStarted) return; // Can't change difficulty mid-game
+    document.querySelectorAll('.diff-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            if (gameStarted) return;
             const diff = btn.getAttribute('data-diff');
             resetGame(gameState.mode, diff);
-            saveSettings({ ...loadSettings(), mode: gameState.mode, difficulty: diff });
+            saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: diff });
             renderScreen('play');
         });
     });
 
-    document.querySelectorAll('.mode-btn').forEach(btn => {
+    document.querySelectorAll('.mode-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
-            if (gameStarted) return; // Can't change mode mid-game
+            if (gameStarted) return;
             const mode = Number(btn.getAttribute('data-mode'));
             if (!AVAILABLE_MODES.includes(mode)) return;
             resetGame(mode, gameState.difficulty);
-            saveSettings({ ...loadSettings(), mode, difficulty: gameState.difficulty });
+            saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode, difficulty: gameState.difficulty });
             renderScreen('play');
         });
     });
-    
+
     const startBtn = document.getElementById('start-btn');
     if (startBtn) {
         startBtn.addEventListener('click', () => {
@@ -534,10 +602,10 @@ function bindPlayEvents() {
             document.getElementById('restart-btn').classList.remove('hidden');
         });
     }
-    
-    const rBtn = document.getElementById('restart-btn');
-    if(rBtn) {
-        rBtn.addEventListener('click', () => {
+
+    const restartBtn = document.getElementById('restart-btn');
+    if (restartBtn) {
+        restartBtn.addEventListener('click', () => {
             gameStarted = false;
             resetGame(gameState.mode, gameState.difficulty);
             updateWordDisplay();
@@ -545,32 +613,28 @@ function bindPlayEvents() {
             document.getElementById('wpm-display').innerText = '0';
             document.getElementById('errors-display').innerText = '0';
             document.getElementById('start-btn').classList.remove('hidden');
-            rBtn.classList.add('hidden');
+            restartBtn.classList.add('hidden');
         });
     }
 }
 
-function onGlobalKeyDown(e) {
+function onGlobalKeyDown(event) {
     const area = document.getElementById('word-display-area');
     if (!area) return;
-    const target = e.target;
-    const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
-    if (isInputField) return; // Allow normal input field behavior
-    
-    if (e.key === 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
-    
-    if (!gameStarted) return; // Don't type until start button is clicked
-    
-    if (e.key === ' ' || e.key === 'Backspace') {
-        e.preventDefault();
+    if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+    if (event.key === 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!gameStarted) return;
+
+    if (event.key === ' ' || event.key === 'Backspace') {
+        event.preventDefault();
     }
-    
-    handleKeystroke(e.key, updateWordDisplay, () => {
+
+    handleKeystroke(event.key, updateWordDisplay, () => {
         const user = getCurrentUser();
-        if (user?.email) {
+        if (user?.uid) {
             startServerRun(gameState.mode, gameState.difficulty)
-                .then((run) => {
-                    activeRunId = run.ok ? run.runId : null;
+                .then((result) => {
+                    activeRunId = result.ok ? result.runId : null;
                 })
                 .catch(() => {
                     activeRunId = null;
@@ -579,54 +643,50 @@ function onGlobalKeyDown(e) {
             activeRunId = null;
         }
 
-        startGame(
-            updateTick,
-            showResults
-        );
+        startGame(updateTick, showResults);
     });
 }
 
 function updateTick(time) {
     const timeEl = document.getElementById('time-display');
-    if(timeEl) timeEl.innerText = time;
-    
+    if (timeEl) timeEl.innerText = time;
+
     const gross = calculateGrossWPM(gameState.mode - time, gameState.totalTypedChars);
     const net = calculateNetWPM(gross, gameState.errors, gameState.mode - time);
-    
+
     const wpmEl = document.getElementById('wpm-display');
-    if(wpmEl && time < gameState.mode) wpmEl.innerText = Math.max(0, Math.round(net));
-    
-    // Update progress bars
-    const totalCurrentChars = gameState.currentWordIndex * 5; // Rough estim
-    const totalExpectedChars = 100 * 5; // Assumed game max ~ 100 words in 60s
-    let playerPct = Math.min(100, Math.max(0, (totalCurrentChars / totalExpectedChars) * 100));
-    
-    const pb = document.getElementById('player-progress');
-    if(pb) pb.style.left = playerPct + '%';
+    if (wpmEl && time < gameState.mode) wpmEl.innerText = Math.max(0, Math.round(net));
+
+    const totalCurrentChars = gameState.currentWordIndex * 5;
+    const totalExpectedChars = 100 * 5;
+    const playerPct = Math.min(100, Math.max(0, (totalCurrentChars / totalExpectedChars) * 100));
+
+    const progressEl = document.getElementById('player-progress');
+    if (progressEl) progressEl.style.left = `${playerPct}%`;
 }
 
 function updateWordDisplay() {
     const area = document.getElementById('word-display-area');
     if (!area) return;
-    
+
     document.getElementById('errors-display').innerText = gameState.errors;
-    
+
     let html = '';
     const startIdx = Math.max(0, gameState.currentWordIndex - 5);
     const endIdx = startIdx + 30;
-    
-    for (let i = startIdx; i < Math.min(endIdx, gameState.words.length); i++) {
-        const word = gameState.words[i];
-        const typed = gameState.typedEntries[i];
-        const isCurrent = i === gameState.currentWordIndex;
-        
+
+    for (let index = startIdx; index < Math.min(endIdx, gameState.words.length); index++) {
+        const word = gameState.words[index];
+        const typed = gameState.typedEntries[index];
+        const isCurrent = index === gameState.currentWordIndex;
+
         let wordHtml = `<div class="mx-1.5 ${isCurrent ? 'opacity-100 font-bold' : 'opacity-40'}">`;
-        
-        for (let j = 0; j < Math.max(word.length, typed.length); j++) {
-            const char = word[j] || '';
-            const typedChar = typed[j];
+
+        for (let charIndex = 0; charIndex < Math.max(word.length, typed.length); charIndex++) {
+            const char = word[charIndex] || '';
+            const typedChar = typed[charIndex];
             let charClass = '';
-            
+
             if (typedChar === undefined) {
                 charClass = 'text-[#E0E0E0]';
             } else if (typedChar === char) {
@@ -634,24 +694,23 @@ function updateWordDisplay() {
             } else {
                 charClass = 'text-[#93000a] bg-[#ffdad6]/20 py-0.5 rounded-sm';
             }
-            
-            if (isCurrent && j === typed.length) {
+
+            if (isCurrent && charIndex === typed.length) {
                 charClass += ' border-l border-[#E9C176] animate-[blink_1s_step-end_infinite] -ml-[1px] pl-[1px]';
             }
-            
+
             const displayChar = char || typedChar;
             wordHtml += `<span class="${charClass}">${displayChar}</span>`;
         }
-        
-        // Handle cursor at the end of the word if nothing typed yet in this word
+
         if (isCurrent && typed.length === word.length) {
-             wordHtml += `<span class="border-l border-[#E9C176] animate-[blink_1s_step-end_infinite] -ml-[1px] pl-[1px]"></span>`;
+            wordHtml += '<span class="border-l border-[#E9C176] animate-[blink_1s_step-end_infinite] -ml-[1px] pl-[1px]"></span>';
         }
-        
-        wordHtml += `</div>`;
+
+        wordHtml += '</div>';
         html += wordHtml;
     }
-    
+
     area.innerHTML = html;
 }
 
@@ -659,14 +718,15 @@ function showResults() {
     const gross = calculateGrossWPM(gameState.mode, gameState.totalTypedChars);
     const net = calculateNetWPM(gross, gameState.errors, gameState.mode);
     const acc = calculateAccuracy(gameState.totalTypedChars, gameState.errors);
-    
+
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - gameState.startTime) / 1000));
     const submittedRunId = activeRunId;
     activeRunId = null;
 
-    // Submit result to server for anti-cheat validation.
     const currentUser = getCurrentUser();
-    if (currentUser?.email) {
+    const selectedCountryName = getSelectedCountryName();
+
+    if (currentUser?.uid) {
         if (!submittedRunId) {
             const statusEl = document.getElementById('save-status');
             if (statusEl) {
@@ -674,35 +734,34 @@ function showResults() {
             }
         } else {
             submitResult({
-                team: selectedTeamId ? TEAMS.find(t=>t.id===selectedTeamId)?.name : 'Solo Agent',
+                country: selectedCountryName,
                 mode: gameState.mode,
                 difficulty: gameState.difficulty,
+                netWPM: net,
+                grossWPM: gross,
+                acc,
                 typedChars: gameState.totalTypedChars,
                 errors: gameState.errors,
                 elapsedSeconds,
                 runId: submittedRunId,
-                selectedTeamId: selectedTeamId || ''
+                selectedCountryId: selectedCountryId || '',
             }).then((result) => {
                 const statusEl = document.getElementById('save-status');
                 if (!statusEl) return;
                 if (result.ok) {
-                    statusEl.innerHTML = '<span class="text-[#93D6A0]">Solo Run Saved to Leaderboard!</span>';
+                    statusEl.innerHTML = '<span class="text-[#93D6A0]">Run saved to leaderboard!</span>';
                 } else {
-                    statusEl.innerHTML = `<span class="text-[#E9C176]">${result.error}</span>`;
+                    statusEl.innerHTML = `<span class="text-[#E9C176]">${escapeHtml(result.error)}</span>`;
                 }
             });
         }
     }
-    
+
     const main = document.getElementById('main-content');
-    const userEmail = currentUser?.email;
-    
-    let dbStatusMsg = '';
-    if(userEmail) {
-        dbStatusMsg = '<span class="text-[#8A9389]">Submitting verified run...</span>';
-    } else {
-        dbStatusMsg = '<span class="text-[#E9C176]">Sign up to save on Leaderboard!</span>';
-    }
+    const userLabel = currentUser?.player || 'Guest';
+    const dbStatusMsg = currentUser?.uid
+        ? '<span class="text-[#8A9389]">Submitting verified run...</span>'
+        : '<span class="text-[#E9C176]">Login with Discord to save runs.</span>';
 
     main.innerHTML = `
         <div class="flex flex-col items-center justify-center w-full min-h-[400px]">
@@ -712,7 +771,7 @@ function showResults() {
                     <span class="text-[80px] font-headline font-black text-[#E0E0E0] leading-none">${Math.round(net)}</span>
                     <span class="text-xl font-bold text-[#8A9389]">WPM</span>
                 </div>
-                
+
                 <div class="w-full space-y-4 text-sm font-bold tracking-widest uppercase text-[#8A9389]">
                     <div class="flex justify-between border-b border-outline/5 pb-2">
                         <span>Accuracy</span><span class="text-[#93D6A0]">${acc.toFixed(1)}%</span>
@@ -723,8 +782,11 @@ function showResults() {
                     <div class="flex justify-between pb-2">
                         <span>Errors</span><span class="text-[#93000a]">${gameState.errors}</span>
                     </div>
+                    <div class="flex justify-between pb-2">
+                        <span>Player</span><span class="text-[#E0E0E0]">${escapeHtml(userLabel)}</span>
+                    </div>
                 </div>
-                
+
                 <div class="mt-8 text-center text-[10px] font-bold uppercase tracking-widest">
                     ${dbStatusMsg}
                 </div>
@@ -733,9 +795,8 @@ function showResults() {
             <button id="restart-btn-end" class="bg-[#004B23] text-[#93D6A0] px-12 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:brightness-125 transition-all active:scale-95">Play Again</button>
         </div>
     `;
-    
+
     document.getElementById('restart-btn-end').addEventListener('click', () => {
         renderScreen('play');
     });
 }
-

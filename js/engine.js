@@ -1,12 +1,11 @@
-// Core game engine (timer, state, typing logic)
 import { getRandomWords } from './words.js';
 
 export const gameState = {
-    mode: 60, // 15, 30, 60, 120
-    difficulty: 'medium', // easy, medium, hard
-    status: 'idle', // idle, playing, finished
+    mode: 60,
+    difficulty: 'medium',
+    status: 'idle',
     words: [],
-    typedEntries: [], // keeps track of typed chars per word
+    typedEntries: [],
     currentWordIndex: 0,
     startTime: 0,
     timeRemaining: 60,
@@ -23,7 +22,7 @@ export function resetGame(mode = 60, difficulty = 'medium') {
     gameState.mode = mode;
     gameState.difficulty = difficulty;
     gameState.status = 'idle';
-    gameState.words = getRandomWords(50, difficulty); // initial load
+    gameState.words = getRandomWords(50, difficulty);
     gameState.typedEntries = gameState.words.map(() => '');
     gameState.currentWordIndex = 0;
     gameState.timeRemaining = mode;
@@ -72,21 +71,19 @@ export function handleKeystroke(key, onUpdate, onGameStartCallback) {
             gameState.currentWordIndex--;
         }
     } else if (key === ' ' || key === 'Spacebar') {
-        // move to next word
         if (typed.length > 0) {
             gameState.currentWordIndex++;
             if (gameState.currentWordIndex >= gameState.words.length - 10) {
-                // Add more words if getting close
+                // Keep a small buffer ahead of the cursor so long sessions do not
+                // stall when the player approaches the end of the current word list.
                 const newWords = getRandomWords(20);
                 gameState.words.push(...newWords);
                 gameState.typedEntries.push(...newWords.map(() => ''));
             }
         }
     } else if (key.length === 1) {
-        // Standard character
         gameState.typedEntries[gameState.currentWordIndex] += key;
         gameState.totalTypedChars++;
-        // Simple error counting: if character just typed doesn't match word
         const charIndex = gameState.typedEntries[gameState.currentWordIndex].length - 1;
         if (currentWord[charIndex] !== key) {
             gameState.errors++;

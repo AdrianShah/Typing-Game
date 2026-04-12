@@ -1,159 +1,332 @@
-﻿import { auth, db } from './firebase.js';
-import {
-    createUserWithEmailAndPassword,
-    signInWithEmailAndPassword,
-    sendEmailVerification,
-    signOut,
-    onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-import {
-    doc,
-    getDoc,
-    setDoc,
-    updateDoc,
-    serverTimestamp
-} from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+import { api } from './convexApi.js';
+import { getConvexClient } from './convexClient.js';
+import { safeParse } from './utils.js';
+
+const CLERK_APPEARANCE = {
+    variables: {
+        colorBackground: '#1C1B1B',
+        colorPrimary: '#004B23',
+        colorText: '#E0E0E0',
+        colorInputBackground: '#131313',
+        colorInputText: '#E0E0E0',
+        colorTextSecondary: '#8A9389',
+        colorNeutral: '#404941',
+        colorDanger: '#93000a',
+        borderRadius: '12px',
+    },
+    elements: {
+        card: 'bg-[#1C1B1B] border border-[#E9C176]/30 shadow-2xl',
+        rootBox: 'bg-[#1C1B1B]',
+        headerTitle: 'text-[#E9C176] uppercase tracking-[0.18em]',
+        headerSubtitle: 'text-[#8A9389]',
+        formFieldLabel: 'text-[#8A9389]',
+        formFieldInput: 'bg-[#131313] border border-[#404941] text-[#E0E0E0] placeholder:text-[#8A9389]',
+        formButtonPrimary: 'bg-[#004B23] text-white hover:bg-[#005a2b]',
+        formButtonSecondary: 'bg-[#1C1B1B] border border-[#E9C176]/30 text-[#E9C176] hover:bg-[#2A2A2A]',
+        socialButtonsBlockButton: 'bg-[#131313] border border-[#404941] text-[#E0E0E0] hover:border-[#E9C176]/30',
+        socialButtonsBlockButtonText: 'text-[#E0E0E0]',
+        footerActionLink: 'text-[#E9C176] hover:text-[#ffe2a8]',
+        identityPreview: 'bg-[#131313] border border-[#404941]',
+        identityPreviewText: 'text-[#E0E0E0]',
+        identityPreviewEditButton: 'text-[#E9C176]',
+    },
+};
+export function getClerkAppearance() {
+    return CLERK_APPEARANCE;
+}
 
 let currentUser = null;
+let clerkInstance = null;
+let clerkReadyPromise = null;
+let authUnsubscribe = null;
 const listeners = new Set();
+const PROFILE_STORAGE_KEY = 'wpm_clerk_profile';
 
 function notifyListeners() {
     listeners.forEach((listener) => listener(currentUser));
 }
 
-function normalizeEmail(email) {
-    return (email || '').trim().toLowerCase();
+function getClerkPublishableKey() {
+    return import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
 }
 
-function isValidEmail(email) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+function getStoredProfile() {
+    return safeParse(localStorage.getItem(PROFILE_STORAGE_KEY), null);
+}
+
+function persistCurrentUser(user) {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(user));
+}
+
+function clearStoredAuth() {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+}
+
+function getClerkDisplayName(clerkUser) {
+    if (!clerkUser) return 'Player';
+
+    const nameParts = [clerkUser.firstName, clerkUser.lastName].filter(Boolean);
+    if (nameParts.length > 0) {
+        return nameParts.join(' ');
+    }
+
+    if (clerkUser.fullName) {
+        return clerkUser.fullName;
+    }
+
+    if (clerkUser.username) {
+        return clerkUser.username;
+    }
+
+    return clerkUser.primaryEmailAddress?.emailAddress?.split('@')[0] || 'Player';
+}
+
+function buildCurrentUser(clerkUser, profileRecord) {
+    const avatarUrl = profileRecord?.imageUrl || clerkUser.imageUrl || 'https://cdn.discordapp.com/embed/avatars/0.png';
+    const displayName = profileRecord?.player || getClerkDisplayName(clerkUser);
+
+    return {
+        uid: clerkUser.id,
+        player: displayName,
+        username: clerkUser.username || null,
+        avatarUrl,
+        icon: profileRecord?.icon || avatarUrl,
+        country: profileRecord?.country || null,
+        email: profileRecord?.email || clerkUser.primaryEmailAddress?.emailAddress || null,
+        provider: 'clerk',
+        profileComplete: Boolean(profileRecord?.profileComplete),
+        accessToken: null,
+    };
+}
+
+async function syncProfileWithConvex(user, options = {}) {
+    const client = getConvexClient();
+    const profileComplete = options.profileComplete ?? user.profileComplete ?? false;
+
+    // Mirror the authenticated profile into Convex so refreshes keep the same
+    // user identity, avatar, and country state without a separate profile step.
+    await client.mutation(api.users.upsertClerkProfile, {
+        uid: user.uid,
+        player: user.player,
+        icon: user.icon,
+        country: user.country || undefined,
+        email: user.email || undefined,
+        username: user.username || undefined,
+        imageUrl: user.avatarUrl || undefined,
+        profileComplete,
+    });
+
+    return await client.query(api.users.getProfileByUid, { uid: user.uid });
+}
+
+async function refreshFromClerk(clerkUser) {
+    if (!clerkUser) {
+        currentUser = null;
+        clearStoredAuth();
+        notifyListeners();
+        return null;
+    }
+
+    const existingProfile = await getConvexClient().query(api.users.getProfileByUid, {
+        uid: clerkUser.id,
+    });
+
+    const baseUser = buildCurrentUser(clerkUser, existingProfile);
+    const profileRecord = await syncProfileWithConvex(baseUser, {
+        profileComplete: existingProfile?.profileComplete ?? false,
+    });
+
+    currentUser = buildCurrentUser(clerkUser, profileRecord);
+    persistCurrentUser(currentUser);
+    notifyListeners();
+    return currentUser;
+}
+
+async function ensureClerk() {
+    const publishableKey = getClerkPublishableKey();
+    if (!publishableKey) {
+        throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in the environment.');
+    }
+
+    if (!clerkInstance) {
+        const { Clerk } = await import('@clerk/clerk-js');
+        // Derive the Frontend API domain from the publishable key
+        let clerkDomain = '';
+        try {
+            const parts = publishableKey.split('_');
+            if (parts.length >= 3) {
+                clerkDomain = atob(parts[2]).slice(0, -1);
+            }
+        } catch (e) {
+            console.warn('Could not parse clerk domain from key', e);
+        }
+
+        if (clerkDomain) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`;
+                script.async = true;
+                script.crossOrigin = 'anonymous';
+                script.onload = resolve;
+                script.onerror = () => reject(new Error('Failed to load @clerk/ui bundle'));
+                document.head.appendChild(script);
+            });
+        }
+
+        clerkInstance = new Clerk(publishableKey, {
+            appearance: CLERK_APPEARANCE,
+        });
+    }
+
+    if (!clerkReadyPromise) {
+        clerkReadyPromise = clerkInstance.load({
+            ui: window.__internal_ClerkUICtor ? { ClerkUI: window.__internal_ClerkUICtor } : undefined,
+        });
+        await clerkReadyPromise;
+
+        if (authUnsubscribe) {
+            authUnsubscribe();
+        }
+
+        authUnsubscribe = clerkInstance.addListener((resources) => {
+            if (resources.user === undefined) {
+                return;
+            }
+
+            refreshFromClerk(resources.user).catch((error) => {
+                console.error('Unable to sync Clerk profile:', error);
+            });
+        }, { skipInitialEmit: false });
+    } else {
+        await clerkReadyPromise;
+    }
+
+    return clerkInstance;
+}
+
+export async function mountClerkUserButton(targetNode) {
+    const clerk = await ensureClerk();
+    if (!targetNode) return null;
+
+    if (typeof clerk.unmountUserButton === 'function') {
+        clerk.unmountUserButton(targetNode);
+    }
+
+    clerk.mountUserButton(targetNode, {
+        appearance: CLERK_APPEARANCE,
+        userProfileMode: 'modal',
+        showName: false,
+    });
+
+    return clerk;
+}
+
+export async function unmountClerkUserButton(targetNode) {
+    const clerk = await ensureClerk();
+    if (targetNode && typeof clerk.unmountUserButton === 'function') {
+        clerk.unmountUserButton(targetNode);
+    }
 }
 
 export async function initAuth() {
-    return new Promise((resolve) => {
-        onAuthStateChanged(auth, async (firebaseUser) => {
-            if (firebaseUser) {
-                if (!firebaseUser.emailVerified) {
-                    await signOut(auth);
-                    currentUser = null;
-                    notifyListeners();
-                    resolve(null);
-                    return;
-                }
+    const storedProfile = getStoredProfile();
+    if (storedProfile) {
+        currentUser = storedProfile;
+        notifyListeners();
+    }
 
-                try {
-                    const docRef = doc(db, 'users', firebaseUser.uid);
-                    let docSnap = await getDoc(docRef);
+    try {
+        const clerk = await ensureClerk();
+        if (clerk.user) {
+            await refreshFromClerk(clerk.user);
+        } else if (!storedProfile) {
+            currentUser = null;
+            notifyListeners();
+        }
+    } catch (error) {
+        console.error('Clerk initialization failed:', error);
+        if (!storedProfile) {
+            currentUser = null;
+            notifyListeners();
+        }
+    }
 
-                    if (!docSnap.exists()) {
-                        await setDoc(docRef, {
-                            email: firebaseUser.email,
-                            profileComplete: false,
-                            icon: 'captain',
-                            username: null,
-                            createdAt: serverTimestamp()
-                        });
-                        docSnap = await getDoc(docRef);
-                    }
-
-                    const data = docSnap.data() || {};
-                    currentUser = {
-                        uid: firebaseUser.uid,
-                        email: firebaseUser.email,
-                        verified: true,
-                        username: data.username || null,
-                        icon: data.icon || 'captain',
-                        profileComplete: Boolean(data.profileComplete)
-                    };
-                } catch (err) {
-                    console.error("Failed to load user profile:", err);
-                    currentUser = null;
-                }
-                
-                notifyListeners();
-                resolve(currentUser);
-            } else {
-                currentUser = null;
-                notifyListeners();
-                resolve(null);
-            }
-        });
-    });
+    return currentUser;
 }
 
-export async function registerWithEmailPassword(email, password) {
-    const normalized = normalizeEmail(email);
-    if (!isValidEmail(normalized)) return { ok: false, error: 'Please enter a valid email.' };
-    
+export async function loginWithClerk() {
     try {
-        const userCredential = await createUserWithEmailAndPassword(auth, normalized, password);
-        await sendEmailVerification(userCredential.user);
-        await signOut(auth); // Sign them out until they verify
+        const clerk = await ensureClerk();
+
+        if (typeof clerk.openSignIn === 'function') {
+            await clerk.openSignIn({
+                appearance: CLERK_APPEARANCE,
+            });
+            return { ok: true };
+        }
+
+        await clerk.redirectToSignIn({
+            signInForceRedirectUrl: window.location.href,
+            signUpForceRedirectUrl: window.location.href,
+            signInFallbackRedirectUrl: window.location.href,
+            signUpFallbackRedirectUrl: window.location.href,
+        });
         return { ok: true };
-    } catch (err) {
-        let msg = err.message;
-        if (err.code === 'auth/email-already-in-use') msg = 'Account already exists. Please login.';
-        else if (err.code === 'auth/weak-password') msg = 'Password should be at least 6 characters.';
-        return { ok: false, error: msg };
+    } catch (error) {
+        const message = error?.message || '';
+        if (message.includes('cannot_render_single_session_enabled') && clerkInstance?.user) {
+            await refreshFromClerk(clerkInstance.user);
+            return { ok: true };
+        }
+        return { ok: false, error: error.message };
     }
 }
 
-export async function loginWithEmailPassword(email, password) {
-    const normalized = normalizeEmail(email);
-    if (!isValidEmail(normalized)) return { ok: false, error: 'Please enter a valid email.' };
+export async function setupProfile(username, icon, country, avatarUrl) {
+    if (!currentUser) return { ok: false, error: 'Login first.' };
+
+    const nextUser = {
+        ...currentUser,
+        player: username?.trim() || currentUser.player,
+        icon: icon || currentUser.icon,
+        country: country || currentUser.country || null,
+        avatarUrl: avatarUrl?.trim() || currentUser.avatarUrl || null,
+        profileComplete: true,
+    };
 
     try {
-        const userCredential = await signInWithEmailAndPassword(auth, normalized, password);
-        if (!userCredential.user.emailVerified) {
-            await signOut(auth);
-            return { ok: false, error: 'Please verify your email first. Check your inbox.' };
-        }
-        return { ok: true };
-    } catch (err) {
-        let msg = err.message;
-        if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-            msg = 'Invalid credentials.';
-        }
-        return { ok: false, error: msg };
-    }
-}
-
-export async function verifyEmailCode(email, code) {
-    return { ok: false, error: 'Please click the verification link sent to your email.' };
-}
-
-export async function setupProfile(username, icon) {
-    if (!auth.currentUser || !currentUser) return { ok: false, error: 'Not logged in.' };
-    
-    try {
-        const docRef = doc(db, 'users', currentUser.uid);
-        await updateDoc(docRef, {
-            username: username,
-            icon: icon,
-            profileComplete: true
+        await getConvexClient().mutation(api.users.updateProfileBasics, {
+            uid: nextUser.uid,
+            player: nextUser.player,
+            icon: nextUser.icon,
+            country: nextUser.country || undefined,
+            imageUrl: nextUser.avatarUrl || undefined,
+            profileComplete: true,
         });
-
-        // Update local state
-        currentUser.username = username;
-        currentUser.icon = icon;
-        currentUser.profileComplete = true;
+        currentUser = nextUser;
+        persistCurrentUser(currentUser);
         notifyListeners();
         return { ok: true, user: currentUser };
-    } catch (err) {
-        return { ok: false, error: err.message };
+    } catch (error) {
+        return { ok: false, error: error.message };
     }
 }
 
-export function logout() {
-    signOut(auth).then(() => {
+export async function logout() {
+    try {
+        const clerk = await ensureClerk();
+        await clerk.signOut();
+    } catch (error) {
+        console.error('Clerk sign out failed:', error);
+    } finally {
+        clearStoredAuth();
         currentUser = null;
         notifyListeners();
-    });
+    }
 }
 
 export function getCurrentUser() { return currentUser; }
-export function getAuthToken() { return currentUser ? 'firebase-token' : null; }
-export function isAuthenticated() { return Boolean(currentUser?.email); }
+export function isAuthenticated() { return Boolean(currentUser?.uid); }
 export function subscribeAuth(listener) {
     listeners.add(listener);
     return () => listeners.delete(listener);

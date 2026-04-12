@@ -1,5 +1,3 @@
-// Metrics functions
-
 export function calculateGrossWPM(timeInSeconds, typedEntriesCount) {
     if (timeInSeconds === 0) return 0;
     return (typedEntriesCount / 5) / (timeInSeconds / 60);

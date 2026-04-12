@@ -1,5 +1,5 @@
-﻿import { db } from './firebase.js';
-import { collection, addDoc, getDocs, query, where, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+﻿import { api } from './convexApi.js';
+import { getConvexClient } from './convexClient.js';
 import { getCurrentUser } from './auth.js';
 import { loadHistory, saveResult as saveLocalResult } from './storage.js';
 
@@ -9,26 +9,35 @@ function isValidDifficulty(difficulty) {
     return difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard';
 }
 
+function toFiniteNumber(value, fallback = null) {
+    const parsedValue = Number(value);
+    return Number.isFinite(parsedValue) ? parsedValue : fallback;
+}
+
 function normalizeEntry(entry) {
     if (!entry || typeof entry !== 'object') return null;
 
-    const netWPM = Number(entry.netWPM);
-    const acc = Number(entry.acc);
-    const mode = Number(entry.mode);
+    const netWPM = toFiniteNumber(entry.netWPM);
+    const acc = toFiniteNumber(entry.acc);
+    const mode = toFiniteNumber(entry.mode);
+    const grossWPM = toFiniteNumber(entry.grossWPM, 0);
+    const difficulty = isValidDifficulty(entry.difficulty) ? entry.difficulty : 'medium';
+    const country = typeof entry.country === 'string' && entry.country.trim() ? entry.country.trim() : 'Solo Agent';
+    const player = typeof entry.player === 'string' && entry.player.trim() ? entry.player.trim() : 'anonymous';
 
     if (!Number.isFinite(netWPM) || !Number.isFinite(acc) || !VALID_MODES.has(mode)) {
         return null;
     }
 
     return {
-        team: entry.team || 'Solo Agent',
-        player: entry.player || 'anonymous',
-        difficulty: entry.difficulty || 'medium',
+        country,
+        player,
+        difficulty,
         mode,
         netWPM,
-        grossWPM: Number(entry.grossWPM) || 0,
+        grossWPM,
         acc,
-        date: entry.date || new Date().toISOString()
+        date: entry.date || new Date().toISOString(),
     };
 }
 
@@ -44,21 +53,33 @@ export async function submitResult(result) {
     if (!norm) return { ok: false, error: 'Invalid result format.' };
 
     try {
-        await addDoc(collection(db, 'leaderboards'), {
+        const response = await getConvexClient().mutation(api.leaderboard.submitRun, {
+            sessionId: String(result.runId),
             uid: user.uid,
-            player: user.username || norm.player,
-            icon: user.icon || 'captain',
-            team: norm.team,
+            player: user.player || norm.player,
+            icon: user.icon || '🏳️',
+            country: norm.country,
             mode: norm.mode,
             difficulty: norm.difficulty,
             netWPM: norm.netWPM,
             grossWPM: norm.grossWPM,
             acc: norm.acc,
-            date: serverTimestamp()
         });
 
-        // Also save to local storage
-        saveLocalResult(norm);
+        if (!response?.accepted) {
+            return {
+                ok: false,
+                error: response?.message || 'Unable to submit run.',
+                personalBest: response?.personalBest ?? null,
+            };
+        }
+
+        saveLocalResult({
+            ...norm,
+            country: norm.country,
+            player: user.player || norm.player,
+            icon: user.icon || '🏳️',
+        });
 
         return { ok: true, data: norm };
     } catch (err) {
@@ -70,14 +91,18 @@ export async function startServerRun(mode, difficulty) {
     const user = getCurrentUser();
     if (!user) return { ok: false, error: 'Unauthorized' };
 
+    const normalizedMode = Number(mode);
+    if (!VALID_MODES.has(normalizedMode) || !isValidDifficulty(difficulty)) {
+        return { ok: false, error: 'Invalid run settings.' };
+    }
+
     try {
-        const docRef = await addDoc(collection(db, 'runs'), {
+        const runId = await getConvexClient().mutation(api.leaderboard.createRunSession, {
             uid: user.uid,
-            mode,
+            mode: normalizedMode,
             difficulty,
-            startTime: serverTimestamp()
         });
-        return { ok: true, runId: docRef.id };
+        return { ok: true, runId };
     } catch (err) {
         return { ok: false, error: err.message };
     }
@@ -85,40 +110,37 @@ export async function startServerRun(mode, difficulty) {
 
 export async function fetchLeaderboard(mode = 30, difficulty = 'medium') {
     try {
-        const q = query(
-            collection(db, 'leaderboards'),
-            where('mode', '==', mode),
-            where('difficulty', '==', difficulty),
-            orderBy('netWPM', 'desc'),
-            limit(10)
-        );
-        const querySnapshot = await getDocs(q);
-        const list = [];
-        querySnapshot.forEach((doc) => {
-            const data = doc.data();
-            list.push({
-                ...data,
-                date: data.date ? data.date.toDate().toISOString() : new Date().toISOString()
-            });
+        const normalizedMode = Number(mode);
+        const normalizedDifficulty = isValidDifficulty(difficulty) ? difficulty : 'medium';
+        const list = await getConvexClient().query(api.leaderboard.getTopRuns, {
+            mode: VALID_MODES.has(normalizedMode) ? normalizedMode : 30,
+            difficulty: normalizedDifficulty,
         });
         return { ok: true, list };
     } catch (err) {
-        console.error("Leaderboard error", err);
+        console.error('Leaderboard error', err);
         return { ok: false, error: err.message };
     }
 }
 
-export async function fetchClubProgression() {
+export async function fetchCountryProgression(uid) {
     const user = getCurrentUser();
-    if (!user) return { ok: false, xp: 0, level: 1 };
-    
-    return { ok: true, xp: 1500, level: 3 };
+    const resolvedUid = uid || user?.uid;
+    if (!resolvedUid) return { ok: true, progressions: [] };
+
+    try {
+        return await getConvexClient().query(api.leaderboard.fetchCountryProgression, {
+            uid: resolvedUid,
+        });
+    } catch (err) {
+        return { ok: false, error: err.message, progressions: [] };
+    }
 }
 
-export async function fetchLeagueModifiers() {
+export async function fetchCountryModifiers() {
     return new Promise((resolve) => {
         const week = Math.floor(new Date().getTime() / (7 * 24 * 60 * 60 * 1000));
-        
+
         const allPossibleModifiers = [
             { name: 'Speed Blitz', effect: 'timer reduced by 10%' },
             { name: 'Precision Challenge', effect: 'penalties doubled' },
