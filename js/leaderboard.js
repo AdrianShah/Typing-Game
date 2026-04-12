@@ -3,7 +3,7 @@ import { getConvexClient } from './convexClient.js';
 import { getCurrentUser } from './auth.js';
 import { loadHistory, saveResult as saveLocalResult } from './storage.js';
 
-const VALID_MODES = new Set([15, 30, 60, 120]);
+const VALID_MODES = new Set([15, 30, 60]);
 
 function isValidDifficulty(difficulty) {
     return difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard';

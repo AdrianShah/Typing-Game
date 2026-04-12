@@ -1,17 +1,19 @@
 import { initEngine, resetGame, startGame, handleKeystroke, gameState } from './engine.js';
 import { calculateGrossWPM, calculateNetWPM, calculateAccuracy } from './metrics.js';
-import { CONTINENTS, COUNTRIES, getCountriesByContinent, getCountryById, getContinentById, getCountryFlagEmoji } from './countries.js';
+import { CONTINENTS, COUNTRIES, getCountriesByContinent, getCountryById, getContinentById, getCountryFlagEmoji, getCountryFlagImg } from './countries.js';
 import { loadSettings, saveSettings } from './storage.js';
 import { fetchLeaderboard, submitResult, startServerRun, fetchCountryProgression, fetchCountryModifiers } from './leaderboard.js';
 import { getCurrentUser, loginWithClerk, logout, setupProfile, subscribeAuth } from './auth.js';
 
 let selectedCountryId = null;
 let currentContinentId = CONTINENTS[0]?.id || 'concacaf';
+let currentLeaderboardMode = null;
+let currentLeaderboardDiff = null;
 let authUnsubscribe = null;
 let activeRunId = null;
 let gameStarted = false;
 
-const AVAILABLE_MODES = [15, 30, 60, 120];
+const AVAILABLE_MODES = [15, 30, 60];
 
 function escapeHtml(value) {
     return String(value || '')
@@ -25,7 +27,7 @@ function escapeHtml(value) {
 function getSelectedCountryLabel() {
     const country = getCountryById(selectedCountryId);
     if (!country) return 'Solo Agent';
-    return `${getCountryFlagEmoji(country.code)} ${country.name}`;
+    return `${getCountryFlagImg(country.code)} ${escapeHtml(country.name)}`;
 }
 
 function getSelectedCountryName() {
@@ -102,15 +104,25 @@ function setupHeaderDropdowns() {
 
         if (user) {
             const displayName = user.player || user.username || user.email || 'Player';
-            const initial = String(displayName).trim().charAt(0).toUpperCase() || 'P';
+            const progressionResult = await fetchCountryProgression(user.uid);
+            let totalXp = 0;
+            (progressionResult.progressions || []).forEach(p => totalXp += p.xp);
+            const currentLevel = Math.floor(totalXp / 500) + 1;
+            const xpProgress = (totalXp % 500) / 5;
+
             const avatarUrl = getPlayerAvatar(user);
 
             profileRoot.classList.remove('hidden');
             profileRoot.innerHTML = `
+                <div class="hidden md:flex flex-col items-end mr-4 justify-center">
+                    <span class="text-[10px] text-[#E9C176] tracking-widest uppercase font-bold">Level ${currentLevel}</span>
+                    <div class="w-24 h-1.5 bg-[#404941] rounded-full mt-1 overflow-hidden">
+                        <div class="h-full bg-[#93D6A0]" style="width: ${xpProgress}%"></div>
+                    </div>
+                </div>
                 <div class="relative">
                     <button id="profile-menu-btn" class="w-10 h-10 rounded-full border border-[#E9C176]/40 overflow-hidden relative bg-[#2A2A2A] hover:border-[#E9C176] transition-colors" type="button" aria-label="Open profile menu" title="${escapeHtml(displayName)}">
                         <img src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayName)}" class="w-full h-full object-cover" />
-                        <span class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#004B23] text-white text-[10px] font-black flex items-center justify-center border border-[#1C1B1B]">${escapeHtml(initial)}</span>
                     </button>
                     <div id="profile-menu" class="hidden absolute right-0 mt-2 w-52 bg-[#1C1B1B] border border-[#404941]/40 rounded-lg shadow-2xl z-[70] p-3">
                         <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">Signed in as</p>
@@ -382,7 +394,7 @@ async function renderScreen(screenId) {
                     <div class="relative w-full h-6 flex items-center mb-1 mt-5">
                         <div class="h-px w-full bg-outline/20 absolute"></div>
                         <div id="player-progress" class="absolute left-[0%] flex items-center gap-2 transition-all duration-300 ease-out z-10">
-                            <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm">${escapeHtml(playerLabel)}</span>
+                            <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm flex items-center gap-1 h-5">${playerLabel}</span>
                             <span class="material-symbols-outlined text-secondary text-base" style="font-variation-settings: 'FILL' 1;">public</span>
                         </div>
                     </div>
@@ -484,42 +496,73 @@ async function renderScreen(screenId) {
 
         await renderCountries(currentContinentId);
     } else if (screenId === 'leaderboard') {
-        main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading leaderboard...</div>';
-        const board = await fetchLeaderboard(gameState.mode, gameState.difficulty);
-        const rows = (board.list || []).map((entry, index) => `
-            <div class="grid grid-cols-12 px-10 py-6 items-center hover:bg-[#201F1F] transition-all duration-300 border-b border-outline/5 ${index % 2 === 0 ? '' : 'bg-[#181818]'}">
-                <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${String(index + 1).padStart(2, '0')}</div>
-                <div class="col-span-6 flex flex-col justify-center">
-                    <div class="font-bold text-base text-[#E0E0E0]">${escapeHtml(entry.country || 'Agent')}</div>
-                    <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">${escapeHtml(entry.player || 'anonymous')} • ${entry.mode}s • ${escapeHtml(entry.difficulty)}</div>
-                </div>
-                <div class="col-span-3 text-center text-sm font-bold text-[#93D6A0]">${Number(entry.acc || 0).toFixed(1)}%</div>
-                <div class="col-span-2 text-right font-headline font-black text-2xl text-[#E9C176]">${Math.round(Number(entry.netWPM || 0))}</div>
-            </div>
-        `).join('');
-
-        main.innerHTML = `
-            <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-16 w-full">
-                <div>
-                    <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">Global Rankings</span>
-                    <h1 class="text-6xl font-headline font-black tracking-tight mt-2 text-[#E9C176]">Leaderboard</h1>
-                    <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">Top 10 runs for the selected mode</p>
-                </div>
-            </div>
-
-            <div class="bg-[#1C1B1B] border border-outline/10 rounded-2xl overflow-hidden shadow-xl w-full">
-                <div class="grid grid-cols-12 px-10 py-6 border-b border-outline/10 text-[10px] uppercase tracking-[0.3em] font-black text-[#8A9389]">
-                    <div class="col-span-1">Rank</div>
-                    <div class="col-span-6">Stats</div>
-                    <div class="col-span-3 text-center text-primary/80">Accuracy</div>
-                    <div class="col-span-2 text-right">Avg WPM</div>
-                </div>
-                <div class="flex flex-col">
-                    ${rows || '<div class="p-8 text-center text-[#8A9389]">No results yet. Start a match.</div>'}
-                </div>
-            </div>
-        `;
+        if (!currentLeaderboardMode) currentLeaderboardMode = gameState.mode;
+        if (!currentLeaderboardDiff) currentLeaderboardDiff = gameState.difficulty;
+        await renderLeaderboardContent();
     }
+}
+
+async function renderLeaderboardContent() {
+    const main = document.getElementById('main-content');
+    if (!main) return;
+    
+    main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading leaderboard...</div>';
+    
+    const board = await fetchLeaderboard(currentLeaderboardMode, currentLeaderboardDiff);
+    const rows = (board.list || []).map((entry, index) => `
+        <div class="grid grid-cols-12 px-10 py-6 items-center hover:bg-[#201F1F] transition-all duration-300 border-b border-outline/5 ${index % 2 === 0 ? '' : 'bg-[#181818]'}">
+            <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${String(index + 1).padStart(2, '0')}</div>
+            <div class="col-span-6 flex flex-col justify-center">
+                <div class="font-bold text-base text-[#E0E0E0]">${escapeHtml(entry.country || 'Agent')}</div>
+                <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">${escapeHtml(entry.player || 'anonymous')} • ${entry.mode}s • ${escapeHtml(entry.difficulty)}</div>
+            </div>
+            <div class="col-span-3 text-center text-sm font-bold text-[#93D6A0]">${Number(entry.acc || 0).toFixed(1)}%</div>
+            <div class="col-span-2 text-right font-headline font-black text-2xl text-[#E9C176]">${Math.round(Number(entry.netWPM || 0))}</div>
+        </div>
+    `).join('');
+
+    const modeTabsHtml = AVAILABLE_MODES.map((mode) => `
+        <button class="lb-mode-btn bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-6 py-2 rounded-lg whitespace-nowrap uppercase transition-all ${mode === currentLeaderboardMode ? 'bg-[#004B23] text-white border-transparent' : ''}" data-mode="${mode}">${mode}s</button>
+    `).join('');
+
+    const diffTabsHtml = ['easy', 'medium', 'hard'].map((diff) => `
+        <button class="lb-diff-btn bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-6 py-2 rounded-lg whitespace-nowrap uppercase transition-all ${diff === currentLeaderboardDiff ? 'bg-[#1C1B1B] text-[#E9C176] border-[#E9C176]/50' : ''}" data-diff="${diff}">${diff}</button>
+    `).join('');
+
+    main.innerHTML = `
+        <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8 w-full">
+            <div>
+                <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">Global Rankings</span>
+                <h1 class="text-6xl font-headline font-black tracking-tight mt-2 text-[#E9C176]">Leaderboard</h1>
+                <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">Top 10 runs for ${currentLeaderboardMode}s (${currentLeaderboardDiff})</p>
+            </div>
+            <div class="flex flex-col md:items-end gap-3">
+                <div class="flex gap-2 overflow-x-auto pb-1">${modeTabsHtml}</div>
+                <div class="flex gap-2 overflow-x-auto pb-1">${diffTabsHtml}</div>
+            </div>
+        </div>
+
+        <div class="bg-[#1C1B1B] border border-outline/10 rounded-2xl overflow-hidden shadow-xl w-full">
+            <div class="grid grid-cols-12 px-10 py-6 border-b border-outline/10 text-[10px] uppercase tracking-[0.3em] font-black text-[#8A9389]">
+                <div class="col-span-1">Rank</div>
+                <div class="col-span-6">Stats</div>
+                <div class="col-span-3 text-center text-primary/80">Accuracy</div>
+                <div class="col-span-2 text-right">Avg WPM</div>
+            </div>
+            <div class="flex flex-col">
+                ${rows || '<div class="p-8 text-center text-[#8A9389]">No results yet. Start a match.</div>'}
+            </div>
+        </div>
+    `;
+
+    document.querySelectorAll('.lb-mode-btn').forEach(btn => btn.addEventListener('click', (e) => {
+        currentLeaderboardMode = Number(e.currentTarget.getAttribute('data-mode'));
+        renderLeaderboardContent();
+    }));
+    document.querySelectorAll('.lb-diff-btn').forEach(btn => btn.addEventListener('click', (e) => {
+        currentLeaderboardDiff = e.currentTarget.getAttribute('data-diff');
+        renderLeaderboardContent();
+    }));
 }
 
 async function renderCountries(continentId) {
@@ -539,7 +582,7 @@ async function renderCountries(continentId) {
 
     grid.innerHTML = countries.map((country) => {
         const isSelected = country.id === selectedCountryId;
-        const flag = getCountryFlagEmoji(country.code);
+        const flag = getCountryFlagImg(country.code);
         const progress = progressionMap.get(country.name);
         const continent = getContinentById(country.continentId);
         const progressDisplay = progress

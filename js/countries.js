@@ -75,6 +75,19 @@ export function getCountryById(countryId) {
   return COUNTRIES.find((country) => country.id === countryId) || null;
 }
 
+export function getCountryFlagImg(code) {
+  const lowerCode = String(code || '').trim().toLowerCase();
+  if (!lowerCode) return '🏳️';
+  
+  let flagUrl = `https://flagcdn.com/${lowerCode}.svg`;
+  if (lowerCode === 'ir') {
+    // Lion and Sun flag for Iran
+    flagUrl = 'https://upload.wikimedia.org/wikipedia/commons/f/fd/State_flag_of_Iran_%281964%E2%80%931980%29.svg';
+  }
+
+  return `<img src="${flagUrl}" alt="${lowerCode} flag" class="w-full h-full object-cover" />`;
+}
+
 export function getCountryFlagEmoji(code) {
   const normalized = String(code || '').trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) return '🏳️';
