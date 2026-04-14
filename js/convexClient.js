@@ -1,6 +1,7 @@
-import { ConvexHttpClient } from 'convex/browser';
+import { ConvexHttpClient, ConvexClient } from 'convex/browser';
 
-let convexClient;
+let convexHttpClient;
+let convexWsClient;
 
 export function getConvexClient() {
   const convexUrl = import.meta.env.VITE_CONVEX_URL;
@@ -8,9 +9,22 @@ export function getConvexClient() {
     throw new Error('Missing VITE_CONVEX_URL in the environment.');
   }
 
-  if (!convexClient) {
-    convexClient = new ConvexHttpClient(convexUrl);
+  if (!convexHttpClient) {
+    convexHttpClient = new ConvexHttpClient(convexUrl);
   }
 
-  return convexClient;
+  return convexHttpClient;
+}
+
+export function getConvexWsClient() {
+  const convexUrl = import.meta.env.VITE_CONVEX_URL;
+  if (!convexUrl) {
+    throw new Error('Missing VITE_CONVEX_URL in the environment.');
+  }
+
+  if (!convexWsClient) {
+    convexWsClient = new ConvexClient(convexUrl);
+  }
+
+  return convexWsClient;
 }

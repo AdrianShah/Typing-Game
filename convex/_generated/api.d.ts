@@ -9,7 +9,10 @@
  */
 
 import type * as leaderboard from "../leaderboard.js";
+import type * as multiplayer from "../multiplayer.js";
+import type * as multiplayerMatch from "../multiplayerMatch.js";
 import type * as users from "../users.js";
+import type * as words from "../words.js";
 
 import type {
   ApiFromModules,
@@ -19,7 +22,10 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   leaderboard: typeof leaderboard;
+  multiplayer: typeof multiplayer;
+  multiplayerMatch: typeof multiplayerMatch;
   users: typeof users;
+  words: typeof words;
 }>;
 
 /**

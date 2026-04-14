@@ -11,7 +11,9 @@ export const gameState = {
     timeRemaining: 60,
     timerInterval: null,
     errors: 0,
-    totalTypedChars: 0
+    totalTypedChars: 0,
+    isMultiplayer: false,
+    multiplayerModeData: null // { matchType, serverEndTime }
 };
 
 export function initEngine() {
@@ -19,6 +21,8 @@ export function initEngine() {
 }
 
 export function resetGame(mode = 60, difficulty = 'medium') {
+    if (gameState.isMultiplayer) return; // Managed by Multiplayer code instead
+    
     gameState.mode = mode;
     gameState.difficulty = difficulty;
     gameState.status = 'idle';
@@ -32,19 +36,50 @@ export function resetGame(mode = 60, difficulty = 'medium') {
     clearInterval(gameState.timerInterval);
 }
 
+export function setMultiplayerGameState(words, mode, matchType) {
+    gameState.isMultiplayer = true;
+    gameState.mode = mode;
+    gameState.multiplayerModeData = { matchType };
+    gameState.status = 'idle';
+    gameState.words = words;
+    gameState.typedEntries = words.map(() => '');
+    gameState.currentWordIndex = 0;
+    gameState.timeRemaining = mode;
+    gameState.errors = 0;
+    gameState.totalTypedChars = 0;
+
+    clearInterval(gameState.timerInterval);
+}
+
 export function startGame(onTick, onFinish) {
     if (gameState.status === 'playing') return;
     gameState.status = 'playing';
     gameState.startTime = Date.now();
-    gameState.timerInterval = setInterval(() => {
-        gameState.timeRemaining--;
-        
-        if (gameState.timeRemaining <= 0) {
-            endGame(onTick, onFinish);
-        } else {
-            onTick(gameState.timeRemaining);
-        }
-    }, 1000);
+    
+    if (gameState.isMultiplayer) {
+         // In multiplayer, the match ends exactly when server reaches endsAt
+         gameState.timerInterval = setInterval(() => {
+             const now = Date.now();
+             const endAt = gameState.multiplayerModeData.serverEndTime;
+             gameState.timeRemaining = Math.max(0, Math.ceil((endAt - now) / 1000));
+             
+             if (gameState.timeRemaining <= 0) {
+                 endGame(onTick, onFinish);
+             } else {
+                 onTick(gameState.timeRemaining);
+             }
+         }, 100); // Check 10x per second to sync local UI with server time
+    } else {
+        gameState.timerInterval = setInterval(() => {
+            gameState.timeRemaining--;
+            
+            if (gameState.timeRemaining <= 0) {
+                endGame(onTick, onFinish);
+            } else {
+                onTick(gameState.timeRemaining);
+            }
+        }, 1000);
+    }
 }
 
 function endGame(onTick, onFinish) {
@@ -55,9 +90,16 @@ function endGame(onTick, onFinish) {
     onFinish();
 }
 
-export function handleKeystroke(key, onUpdate, onGameStartCallback) {
+export function handleKeystroke(key, onUpdate, onGameStartCallback, onMultiplayerProgress = null) {
     if (gameState.status === 'finished') return;
-    if (gameState.status === 'idle' && key.length === 1) {
+    
+    // In multiplayer, the game starts automatically when server timer hits endsAt.
+    // Local pre-emptive keystrokes before start are ignored.
+    if (gameState.isMultiplayer && gameState.status !== 'playing') {
+        return; 
+    }
+
+    if (gameState.status === 'idle' && key.length === 1 && !gameState.isMultiplayer) {
         onGameStartCallback(); // Used to trigger startGame from UI
     }
 
@@ -73,10 +115,11 @@ export function handleKeystroke(key, onUpdate, onGameStartCallback) {
     } else if (key === ' ' || key === 'Spacebar') {
         if (typed.length > 0) {
             gameState.currentWordIndex++;
-            if (gameState.currentWordIndex >= gameState.words.length - 10) {
+            if (gameState.currentWordIndex >= gameState.words.length - 10 && !gameState.isMultiplayer) {
                 // Keep a small buffer ahead of the cursor so long sessions do not
                 // stall when the player approaches the end of the current word list.
-                const newWords = getRandomWords(20);
+                // Disabled in multiplayer because server provides fixed seeds
+                const newWords = getRandomWords(20, gameState.difficulty);
                 gameState.words.push(...newWords);
                 gameState.typedEntries.push(...newWords.map(() => ''));
             }
@@ -90,5 +133,12 @@ export function handleKeystroke(key, onUpdate, onGameStartCallback) {
         }
     }
     
+    if (gameState.isMultiplayer && onMultiplayerProgress) {
+        // Calculate progress % roughly
+        const totalWords = gameState.words.length || 1;
+        const progressRaw = (gameState.currentWordIndex / totalWords) * 100;
+        onMultiplayerProgress(progressRaw);
+    }
+
     onUpdate();
 }

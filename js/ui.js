@@ -53,12 +53,12 @@ function updateNavActive(screenId) {
 }
 
 function setupNavigation() {
-    ['play', 'countries', 'leaderboard'].forEach((id) => {
+    ['play', 'countries', 'leaderboard', 'multiplayer'].forEach((id) => {
         const btn = document.getElementById(`nav-${id}`);
         if (btn) btn.addEventListener('click', () => renderScreen(id));
     });
 
-    ['play', 'countries', 'leaderboard'].forEach((id) => {
+    ['play', 'countries', 'leaderboard', 'multiplayer'].forEach((id) => {
         const btn = document.getElementById(`nav-mob-${id}`);
         if (btn) btn.addEventListener('click', () => renderScreen(id));
     });
@@ -357,7 +357,7 @@ export function initUI() {
     document.addEventListener('keydown', onGlobalKeyDown);
 }
 
-async function renderScreen(screenId) {
+export async function renderScreen(screenId) {
     updateNavActive(screenId);
     const main = document.getElementById('main-content');
 
@@ -499,6 +499,9 @@ async function renderScreen(screenId) {
         if (!currentLeaderboardMode) currentLeaderboardMode = gameState.mode;
         if (!currentLeaderboardDiff) currentLeaderboardDiff = gameState.difficulty;
         await renderLeaderboardContent();
+    } else if (screenId === 'multiplayer') {
+        const { renderMultiplayerScreen } = await import('./multiplayerUI.js');
+        await renderMultiplayerScreen(main);
     }
 }
 
