@@ -125,6 +125,20 @@ export function handleKeystroke(key, onUpdate, onGameStartCallback, onMultiplaye
             }
         }
     } else if (key.length === 1) {
+        if (gameState.isMultiplayer && ['1', '2', '3', '4', '5', '6'].includes(key)) {
+            const emojis = { '1': '🔥', '2': '😂', '3': '😭', '4': '💀', '5': '❤️', '6': '👀' };
+            const emoji = emojis[key];
+            if (emoji) {
+                import('./multiplayerApi.js').then(({ sendRoomMessage }) => {
+                    const ctx = gameState.multiplayerModeData;
+                    if (ctx && ctx.roomId && ctx.participantId) {
+                        sendRoomMessage(ctx.roomId, ctx.participantId, 'emoji', emoji).catch(() => {});
+                    }
+                });
+                return; // Ignore typing the number
+            }
+        }
+
         gameState.typedEntries[gameState.currentWordIndex] += key;
         gameState.totalTypedChars++;
         const charIndex = gameState.typedEntries[gameState.currentWordIndex].length - 1;

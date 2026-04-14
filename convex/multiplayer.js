@@ -249,3 +249,49 @@ export const updateHeartbeat = mutation({
     }
   }
 });
+
+// --- NEW V2: Chat & Reactions ---
+
+export const sendRoomMessage = mutation({
+  args: {
+    roomId: v.id('multiplayerRooms'),
+    participantId: v.id('roomParticipants'),
+    type: v.union(v.literal('text'), v.literal('emoji')),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Rate limit: Check if the user sent a message in the last 1 second
+    const recent = await ctx.db.query('roomMessages')
+      .withIndex('by_participantId', q => q.eq('participantId', args.participantId))
+      .order('desc')
+      .first();
+
+    if (recent && Date.now() - recent.createdAt < 1000) {
+      throw new Error("You are sending messages too quickly.");
+    }
+
+    if (args.content.trim().length === 0 || args.content.length > 200) {
+      throw new Error("Invalid message length.");
+    }
+
+    await ctx.db.insert('roomMessages', {
+      roomId: args.roomId,
+      participantId: args.participantId,
+      type: args.type,
+      content: args.content.trim(),
+      createdAt: Date.now(),
+    });
+  }
+});
+
+export const getRoomMessages = query({
+  args: { roomId: v.id('multiplayerRooms') },
+  handler: async (ctx, args) => {
+    const messages = await ctx.db.query('roomMessages')
+      .withIndex('by_roomId', q => q.eq('roomId', args.roomId))
+      .order('desc')
+      .take(50); // Get last 50 messages
+    
+    return messages.reverse(); // Chronological order
+  }
+});

@@ -16,6 +16,7 @@ export default defineSchema({
     profileComplete: v.boolean(),
     lastUsernameChange: v.optional(v.number()),
     lastAvatarChange: v.optional(v.number()),
+    lastCountryChange: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -116,4 +117,13 @@ export default defineSchema({
     ),
     completedAt: v.number(),
   }).index("by_roundId", ["roundId"]),
+  roomMessages: defineTable({
+    roomId: v.id('multiplayerRooms'),
+    participantId: v.id('roomParticipants'),
+    type: v.union(v.literal('text'), v.literal('emoji')),
+    content: v.string(), // E.g., the message itself, or emoji class like "🔥"
+    createdAt: v.number(),
+  })
+    .index('by_roomId', ['roomId'])
+    .index('by_participantId', ['participantId']),
 });

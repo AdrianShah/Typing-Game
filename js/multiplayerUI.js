@@ -1,35 +1,34 @@
-import { createMultiplayerRoom, getRoomByCode, joinRoomByCode, setReadyStatus, leaveRoom, updateRoomConfig, startRound, subscribeToRoomDetails, restartMatchState, updateHeartbeat } from './multiplayerApi.js';
+import { createMultiplayerRoom, getRoomByCode, joinRoomByCode, setReadyStatus, leaveRoom, updateRoomConfig, startRound, subscribeToRoomDetails, restartMatchState, updateHeartbeat, subscribeToRoomMessages, sendRoomMessage } from './multiplayerApi.js';
 import { gameState, setMultiplayerGameState, startGame } from './engine.js';
 import { getCurrentUser } from './auth.js';
 
 let currentRoomId = null;
 let currentParticipantId = null;
 let roomUnsubscribe = null;
+let chatUnsubscribe = null;
 let heartbeatInterval = null;
+let seenMessageIds = new Set();
 
 let domContext = null; // Container reference
+let startingMatchId = null; // Prevent double starting
 
 export function initMultiplayerUI() {
   const urlParams = new URLSearchParams(window.location.search);
   const roomCode = urlParams.get('room');
   if (roomCode) {
-    showJoinModal(roomCode);
+    import('./ui.js').then(({ renderScreen }) => {
+      renderScreen('multiplayer').then(() => {
+        const codeInput = document.getElementById('mp-code');
+        if (codeInput) {
+          codeInput.value = roomCode;
+        }
+      });
+    });
   }
 }
 
 function showJoinModal(roomCode) {
-  const currentUser = getCurrentUser();
-  if (currentUser && currentUser.uid) {
-    handleJoinRoom(roomCode, currentUser.uid, null, currentUser.player || 'Player', currentUser.icon || '👤');
-  } else {
-    setTimeout(() => {
-        const nickname = prompt(`Join Room ${roomCode}: Enter Nickname`, 'Guest');
-        if (nickname) {
-        const guestId = 'guest_' + Math.random().toString(36).substring(2, 9);
-        handleJoinRoom(roomCode, null, guestId, nickname, '👤');
-        }
-    }, 500); // Slight delay for auth load
-  }
+  // Deprecated in favor of the manual join form flow to prevent auto-adding players
 }
 
 export async function renderMultiplayerScreen(container) {
@@ -135,7 +134,7 @@ function bindLandingEvents() {
     try {
       const { roomCode, roomId, participantId } = await createMultiplayerRoom(
         currentUser.uid, mode, difficulty, type, max, 
-        currentUser.player || 'Host', currentUser.icon || '👤', currentUser.country || null
+        currentUser.player || 'Host', currentUser.avatarUrl || currentUser.icon || '👤', currentUser.country || null
       );
       
       currentRoomId = roomId;
@@ -165,7 +164,7 @@ function bindLandingEvents() {
 
     const currentUser = getCurrentUser();
     if (currentUser && currentUser.uid) {
-      await handleJoinRoom(code, currentUser.uid, null, currentUser.player || 'Player', currentUser.icon || '👤');
+      await handleJoinRoom(code, currentUser.uid, null, currentUser.player || 'Player', currentUser.avatarUrl || currentUser.icon || '👤');
     } else {
       const nickname = prompt(`Join Room ${code}: Enter Nickname`, 'Guest');
       if (nickname) {
@@ -242,6 +241,18 @@ function getLobbyHTML() {
          <div class="flex flex-col gap-3 mt-8 pt-6 border-t border-outline/10" id="lob-controls">
             <!-- Toggles and Start injected here -->
          </div>
+         
+         <div class="mt-8 pt-6 border-t border-outline/10">
+            <h3 class="text-xs uppercase tracking-widest font-bold text-[#8A9389] flex items-center mb-4"><i class="fa-regular fa-comment-dots mr-2"></i>Lobby Chat</h3>
+            <div id="lob-chat-history" class="bg-[#131313] border border-outline/5 rounded-lg h-48 overflow-y-auto mb-3 p-4 flex flex-col gap-2 font-body text-sm custom-scrollbar">
+                <!-- Messages go here -->
+            </div>
+            <form id="lob-chat-form" class="flex gap-2">
+                <input type="text" id="lob-chat-input" class="flex-grow bg-[#1C1B1B] text-[#E0E0E0] rounded-lg px-4 py-3 text-sm border border-outline/20 font-semibold focus:border-[#93D6A0] outline-none placeholder:text-[#8A9389]/50" placeholder="Say something..." autocomplete="off" maxlength="150" />
+                <button type="submit" class="bg-surface-container hover:bg-[#E9C176]/20 text-[#E9C176] px-6 rounded-lg transition-colors border border-outline/10 hover:border-[#E9C176]/50"><i class="fa-solid fa-paper-plane"></i></button>
+            </form>
+         </div>
+
       </div>
     </div>
   `;
@@ -272,6 +283,7 @@ function enterLobby(roomCode) {
   }
   
   if (roomUnsubscribe) roomUnsubscribe();
+  if (chatUnsubscribe) chatUnsubscribe();
   if (heartbeatInterval) clearInterval(heartbeatInterval);
   
   heartbeatInterval = setInterval(() => {
@@ -285,18 +297,78 @@ function enterLobby(roomCode) {
     }
     renderLobbyUpdate(data.room, data.participants, data.activeRound);
   });
+
+  chatUnsubscribe = subscribeToRoomMessages(currentRoomId, (messages) => {
+    messages.forEach(msg => {
+        if (!seenMessageIds.has(msg._id)) {
+            seenMessageIds.add(msg._id);
+            // Only animate if the message was sent in the last 5 seconds to avoid history burst
+            if (msg.type === 'emoji' && (Date.now() - msg.createdAt < 5000)) {
+                showInGameEmoji(msg.participantId, msg.content);
+            }
+        }
+    });
+    renderChatUpdate(messages);
+  });
+
+  const chatForm = document.getElementById('lob-chat-form');
+  chatForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('lob-chat-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    input.value = '';
+    try {
+        await sendRoomMessage(currentRoomId, currentParticipantId, 'text', msg);
+    } catch(err) {
+        alert("Couldn't send message: " + err.message);
+    }
+  });
 }
 
 function disconnectLobby() {
     currentRoomId = null;
     currentParticipantId = null;
     if (roomUnsubscribe) roomUnsubscribe();
+    if (chatUnsubscribe) chatUnsubscribe();
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     
     // Clear URL param without refreshing
     history.pushState(null, '', window.location.pathname);
     
     if (domContext) renderMultiplayerScreen(domContext);
+}
+
+function renderChatUpdate(messages) {
+  const chatContainer = document.getElementById('lob-chat-history');
+  if (!chatContainer) return;
+
+  const isAtBottom = chatContainer.scrollHeight - chatContainer.scrollTop <= chatContainer.clientHeight + 10;
+
+  chatContainer.innerHTML = messages.map(msg => {
+     // NOTE: This assumes we resolve full participant names on the backend or locally.
+     // For speed, let's just make it bold message content and rely on UI cues.
+     const isMe = msg.participantId === currentParticipantId;
+     const timeStr = new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+     return `
+     <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'}">
+        <span class="text-[10px] text-[#8A9389] mb-1 font-semibold uppercase tracking-widest">${timeStr}</span>
+        <div class="max-w-[80%] rounded-xl px-4 py-2 ${isMe ? 'bg-[#004B23]/90 text-white rounded-tr-none' : 'bg-surface-container text-[#E0E0E0] rounded-tl-none'} break-words">
+            ${escapeHtml(msg.content)}
+        </div>
+     </div>
+     `;
+  }).join('');
+
+  if (isAtBottom) {
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+  }
+}
+
+function escapeHtml(unsafe) {
+    return (unsafe || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function renderLobbyUpdate(room, participants, activeRound) {
@@ -328,10 +400,14 @@ function renderLobbyUpdate(room, participants, activeRound) {
           const userIsHost = (p.uid === room.hostUid) || (p.guestId === room.hostUid);
           const active = Date.now() - p.lastSeenAt < 30000;
           
+          const iconHtml = p.icon && p.icon.startsWith('http') 
+              ? `<img src="${p.icon}" class="w-8 h-8 rounded-full border border-outline/20 object-cover" alt="avatar">` 
+              : `<span class="text-2xl">${p.icon || '👤'}</span>`;
+              
           return `
           <div class="flex items-center justify-between p-3 rounded-lg ${isMe ? 'bg-[#004B23]/20 border border-[#93D6A0]/30' : 'bg-surface-container border border-outline/5'}">
             <div class="flex items-center gap-3">
-                <span class="text-2xl">${p.icon || '👤'}</span>
+                ${iconHtml}
                 <div class="flex flex-col">
                     <span class="font-bold text-white flex items-center gap-2">
                         ${p.player} ${isMe ? '<span class="text-[9px] bg-[#93D6A0] text-black px-1.5 py-0.5 rounded uppercase">You</span>' : ''}
@@ -374,13 +450,23 @@ function renderLobbyUpdate(room, participants, activeRound) {
           }
 
           if (isHost) {
-              const countMatch = participants.length > 1;
-              const disabledStart = (!allReady || !countMatch) && participants.length > 1; // allow solo dev testing if 1
-              html += `
-                <button id="btn-start" ${disabledStart ? 'disabled' : ''} class="w-full mt-2 ${disabledStart ? 'bg-surface-container text-[#8A9389] opacity-50 cursor-not-allowed' : 'bg-[#004B23] hover:bg-[#003B1C] text-white shadow-[0_0_15px_rgba(0,75,35,0.4)]'} font-bold py-4 rounded-lg uppercase tracking-widest transition-all">
-                    ${disabledStart ? 'Waiting for players to ready' : 'Start Match'}
-                </button>
-              `;
+              const disabledStart = !allReady || participants.length < 2; 
+              
+              if (!disabledStart) {
+                  html += `<div class="text-center text-[#93D6A0] font-bold uppercase tracking-widest p-4 pb-2 animate-pulse font-headline">Starting Match...</div>`;
+                  
+                  if (activeRound == null && room.status === 'waiting' && startingMatchId !== room._id) {
+                      startingMatchId = room._id;
+                      startRound(currentRoomId, me.uid || me.guestId).catch(err => {
+                          alert("Failed to start match: " + err.message);
+                          startingMatchId = null;
+                      });
+                  }
+              } else {
+                  html += `<div class="text-center text-[#8A9389] opacity-50 font-bold uppercase tracking-widest p-4 pb-2 font-headline text-sm">
+                      ${participants.length < 2 ? 'Waiting for players to join' : 'Waiting for players to ready'}
+                  </div>`;
+              }
           }
       }
       controlsContainer.innerHTML = html;
@@ -390,39 +476,31 @@ function renderLobbyUpdate(room, participants, activeRound) {
           await setReadyStatus(currentParticipantId, !me.ready);
       });
 
-      document.getElementById('btn-start')?.addEventListener('click', async () => {
-          const btn = document.getElementById('btn-start');
-          btn.disabled = true;
-          btn.innerText = 'Starting...';
-          try {
-              await startRound(currentRoomId, me.uid || me.guestId);
-          } catch(err) {
-              alert(err.message);
-              btn.disabled = false;
-              btn.innerText = 'Start Match';
-          }
-      });
-
       document.getElementById('btn-re-host')?.addEventListener('click', async () => {
+          startingMatchId = null;
           await restartMatchState(currentRoomId, me.uid || me.guestId);
       });
   }
 
   // Handle Game start transition
   import('./engine.js').then((engineMod) => {
-    if (activeRound && activeRound.status === 'active' && engineMod.gameState.status !== 'playing') {
-      startMultiplayerGame(room, activeRound);
+    // Only transition if we haven't already processed this exact round
+    const isNewRound = engineMod.gameState.multiplayerModeData?.roundId !== activeRound?._id;
+    if (activeRound && activeRound.status === 'active' && isNewRound) {
+      startMultiplayerGame(room, activeRound, participants);
     }
   });
 }
 
-function startMultiplayerGame(room, activeRound) {
+function startMultiplayerGame(room, activeRound, participants) {
   const words = activeRound.wordListText.split(' ');
   setMultiplayerGameState(words, room.mode, room.matchType);
+  gameState.multiplayerModeData.serverStartTime = activeRound.startedAt;
   gameState.multiplayerModeData.serverEndTime = activeRound.endsAt;
   gameState.multiplayerModeData.roundId = activeRound._id;
   gameState.multiplayerModeData.roomId = room._id;
   gameState.multiplayerModeData.participantId = currentParticipantId;
+  gameState.multiplayerModeData.participants = participants;
 
   // Let js/ui.js know we need to render the play screen
   import('./ui.js').then(({ renderScreen }) => {
@@ -433,4 +511,35 @@ function startMultiplayerGame(room, activeRound) {
 // Added this to export the active multiplayer context for `ui.js` scoring logic
 export function getActiveMultiplayerContext() {
     return { currentRoomId, currentParticipantId };
+}
+
+
+
+
+
+
+export function showInGameEmoji(participantId, emojiContent) {
+    const popup = document.getElementById('emoji-popup-' + participantId);
+    if (!popup) return;
+    
+    popup.style.opacity = '1';
+    
+    const span = document.createElement('span');
+    span.innerText = emojiContent;
+    span.className = 'absolute -bottom-4 left-1/2 -translate-x-1/2 transition-all duration-[2000ms] ease-out drop-shadow-md text-3xl font-emoji z-[100] scale-50 block pointer-events-none opacity-100';
+    popup.appendChild(span);
+    
+    requestAnimationFrame(() => {
+        popup.getBoundingClientRect(); // force reflow
+        const driftX = Math.round((Math.random() - 0.5) * 80);
+        span.style.transform = 'translate(calc(-50% + ' + driftX + 'px), -120px) scale(2.5)';
+        span.style.opacity = '0';
+    });
+    
+    setTimeout(() => {
+        span.remove();
+        if (popup.children.length === 0) {
+            popup.style.opacity = '0';
+        }
+    }, 2000);
 }

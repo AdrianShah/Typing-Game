@@ -27,7 +27,7 @@ function escapeHtml(value) {
 function getSelectedCountryLabel() {
     const country = getCountryById(selectedCountryId);
     if (!country) return 'Solo Agent';
-    return `${getCountryFlagImg(country.code)} ${escapeHtml(country.name)}`;
+    return `<div class="w-3 h-2 inline-block -ml-0.5 rounded-[1px] overflow-hidden flex-shrink-0">${getCountryFlagImg(country.code)}</div> ${escapeHtml(country.name)}`;
 }
 
 function getSelectedCountryName() {
@@ -361,6 +361,14 @@ export async function renderScreen(screenId) {
     updateNavActive(screenId);
     const main = document.getElementById('main-content');
 
+    // Remove room param from URL if we navigate away from multiplayer
+    if (screenId !== 'multiplayer') {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('room')) {
+            history.pushState(null, '', window.location.pathname);
+        }
+    }
+
     if (screenId === 'play') {
         const playerLabel = getSelectedCountryLabel();
         const modeButtonsHtml = AVAILABLE_MODES.map((mode) => `
@@ -382,7 +390,7 @@ export async function renderScreen(screenId) {
                     </div>
                 </div>
 
-                <div class="relative h-20 flex flex-col gap-1 w-full bg-surface-container-low rounded-lg overflow-hidden pitch-gradient border border-outline/10 px-0 py-2">
+                <div class="relative min-h-[5rem] flex flex-col gap-1 w-full bg-surface-container-low rounded-lg overflow-hidden pitch-gradient border border-outline/10 px-0 py-2">
                     <div class="absolute inset-0 flex justify-between px-8 opacity-5">
                         <div class="h-full border-l border-on-surface"></div>
                         <div class="h-full border-l border-on-surface"></div>
@@ -391,17 +399,41 @@ export async function renderScreen(screenId) {
                         <div class="h-full border-l border-on-surface"></div>
                     </div>
 
-                    <div class="relative w-full h-6 flex items-center mb-1 mt-5">
-                        <div class="h-px w-full bg-outline/20 absolute"></div>
-                        <div id="player-progress" class="absolute left-[0%] flex items-center gap-2 transition-all duration-300 ease-out z-10">
-                            <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm flex items-center gap-1 h-5">${playerLabel}</span>
-                            <span class="material-symbols-outlined text-secondary text-base" style="font-variation-settings: 'FILL' 1;">public</span>
-                        </div>
+                      ${gameState.isMultiplayer && gameState.multiplayerModeData.participants ? gameState.multiplayerModeData.participants.map((p, i) => `
+                          <div class="relative w-full h-8 flex items-center mb-1 mt-5 group">
+                              <div class="h-px w-full bg-outline/20 absolute z-0"></div>
+                              <div id="player-progress-${p._id}" class="absolute left-[0%] flex items-center gap-2 transition-all duration-300 ease-out z-10">
+                                  <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] ${p._id === gameState.multiplayerModeData.participantId ? 'bg-primary text-black' : 'bg-surface-container-highest text-white'} px-1.5 py-0.5 rounded-sm flex items-center gap-1 h-5">
+                                      ${p.country ? `<div class="w-3 h-2 inline-block -ml-0.5 rounded-[1px] overflow-hidden flex-shrink-0">${getCountryFlagImg(COUNTRIES.find(c => c.name === p.country)?.code || '')}</div>` : ''}
+                                      <span>${escapeHtml(p.player)}</span>
+                                  </span>
+                                  ${p.icon && p.icon.startsWith('http') ? `<img src="${escapeHtml(p.icon)}" class="w-5 h-5 rounded-full object-cover border border-outline/20 bg-[#131313]">` : `<span class="text-sm bg-surface-container-highest rounded-full w-5 h-5 flex items-center justify-center">${escapeHtml(p.icon) || '👤'}</span>`}
+                                  <div id="emoji-popup-${p._id}" class="absolute -top-8 left-1/2 -translate-x-1/2 text-3xl opacity-0 transition-all duration-500 pointer-events-none scale-50 z-20"></div>
+                              </div>
+                          </div>
+                      `).join('') : `
+                          <div class="relative w-full h-6 flex items-center mb-1 mt-5">
+                              <div class="h-px w-full bg-outline/20 absolute"></div>
+                              <div id="player-progress" class="absolute left-[0%] flex items-center gap-2 transition-all duration-300 ease-out z-10">
+                                  <span class="text-[8px] font-bold text-secondary uppercase tracking-[0.2em] bg-primary px-1.5 py-0.5 rounded-sm flex items-center gap-1 h-5">${playerLabel}</span>
+                                  <span class="material-symbols-outlined text-secondary text-base" style="font-variation-settings: 'FILL' 1;">public</span>
+                              </div>
+                          </div>
+                      `}
+                      ${gameState.isMultiplayer ? `
+                      <div class="absolute bottom-2 right-4 flex gap-2 z-20 opacity-40 hover:opacity-100 transition-opacity">
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="🔥">1 🔥</button>
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="😂">2 😂</button>
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="😭">3 😭</button>
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="💀">4 💀</button>
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="❤️">5 ❤️</button>
+                          <button class="emoji-hotkey text-xs bg-surface-container-highest border border-outline/10 px-2 py-1 rounded-md cursor-pointer hover:border-[#E9C176]" data-emoji="👀">6 👀</button>
+                      </div>` : ''}
                     </div>
                 </div>
             </section>
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-8 w-full mb-16">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 w-full mb-16 max-w-4xl mx-auto">
                 <div class="bg-surface-container-low/40 p-8 rounded-lg flex flex-col items-center justify-center border border-outline/5">
                     <span class="text-[10px] font-['Manrope'] font-bold tracking-[0.3em] text-on-surface-variant uppercase mb-3">Time</span>
                     <div class="flex items-baseline gap-2">
@@ -416,26 +448,26 @@ export async function renderScreen(screenId) {
                         <span class="text-lg font-headline font-medium text-on-surface-variant">WPM</span>
                     </div>
                 </div>
-                <div class="bg-[#1C1B1B] p-8 rounded-lg flex flex-col items-center justify-center border border-primary/40 relative overflow-hidden">
-                    <div class="absolute top-0 left-0 w-full h-1 bg-primary"></div>
-                    <span class="text-[10px] font-['Manrope'] font-bold tracking-[0.3em] text-[#E9C176] uppercase mb-3">Errors</span>
-                    <div class="flex items-baseline gap-2">
-                        <span id="errors-display" class="text-6xl font-headline font-extrabold text-[#E9C176]">0</span>
-                    </div>
-                </div>
             </div>
 
             <div class="w-full max-w-4xl bg-surface-container-low/30 p-12 rounded-lg backdrop-blur-md relative border border-outline/10 overflow-hidden">
-                <div id="word-display-area" class="text-2xl md:text-3xl leading-[1.8] font-body text-on-surface-variant select-none tracking-wide text-center flex flex-wrap justify-center gap-1"></div>
+                <div id="countdown-overlay" class="hidden absolute inset-0 z-50 flex items-center justify-center bg-[#131313]/90 backdrop-blur-md rounded-xl transition-opacity duration-300">
+                    <span id="countdown-number" class="text-[150px] leading-none font-headline font-black text-[#93D6A0] drop-shadow-2xl">3</span>
+                </div>
+                <div id="word-display-area" class="text-2xl md:text-3xl leading-[1.8] font-body text-on-surface-variant select-none tracking-wide text-center flex flex-wrap justify-center gap-1 transition-all duration-300"></div>
             </div>
 
-            <div class="mt-16 flex gap-6">
+            <div class="mt-16 flex gap-6" id="action-buttons">
+                ${!gameState.isMultiplayer ? `
                 <button id="start-btn" class="${gameStarted ? 'hidden' : ''} bg-[#004B23] text-white font-bold px-10 py-3.5 rounded-sm hover:brightness-125 active:scale-[0.98] transition-all duration-300 uppercase tracking-[0.2em] text-[11px] font-label border border-secondary/20">
                     Start Match
                 </button>
                 <button id="restart-btn" class="${gameStarted ? '' : 'hidden'} bg-primary text-[#E9C176] font-bold px-10 py-3.5 rounded-sm hover:brightness-125 active:scale-[0.98] transition-all duration-300 uppercase tracking-[0.2em] text-[11px] font-label border border-secondary/20">
                     Restart Match
                 </button>
+                ` : `<button id="exit-multiplayer-btn" class="bg-error/20 text-error font-bold px-10 py-3.5 rounded-sm hover:bg-error hover:text-white active:scale-[0.98] transition-all duration-300 uppercase tracking-[0.2em] text-[11px] font-label border border-error/50">
+                    Return to Lobby
+                </button>`}
             </div>
         `;
 
@@ -444,6 +476,36 @@ export async function renderScreen(screenId) {
         resetGame(gameState.mode, gameState.difficulty);
         bindPlayEvents();
         updateWordDisplay();
+
+        if (gameState.isMultiplayer && gameState.multiplayerModeData) {
+            const overlay = document.getElementById('countdown-overlay');
+            const cntNum = document.getElementById('countdown-number');
+            const wordArea = document.getElementById('word-display-area');
+            
+            gameState.status = 'countdown';
+            overlay.classList.remove('hidden');
+            wordArea.classList.add('blur-sm', 'opacity-30', 'pointer-events-none');
+
+            const cdInterval = setInterval(() => {
+                // If user leaves screen
+                if (document.getElementById('countdown-overlay') !== overlay) {
+                    clearInterval(cdInterval);
+                    return;
+                }
+                const msLeft = gameState.multiplayerModeData.serverStartTime - Date.now();
+                if (msLeft <= 0) {
+                    clearInterval(cdInterval);
+                    overlay.classList.add('opacity-0');
+                    setTimeout(() => overlay.classList.add('hidden'), 300);
+                    wordArea.classList.remove('blur-sm', 'opacity-30', 'pointer-events-none');
+                    gameStarted = true;
+                    // Trigger actual multiplayer start so UI ticks down and responds
+                    startGame(updateTick, showResults);
+                } else {
+                    cntNum.innerText = Math.ceil(msLeft / 1000);
+                }
+            }, 100);
+        }
 
         fetchCountryModifiers().then((result) => {
             if (!result.ok || !result.modifiers) return;
@@ -610,8 +672,26 @@ async function renderCountries(continentId) {
     }).join('');
 
     document.querySelectorAll('.country-card').forEach((card) => {
-        card.addEventListener('click', (event) => {
-            selectedCountryId = event.currentTarget.getAttribute('data-country');
+        card.addEventListener('click', async (event) => {
+            const id = event.currentTarget.getAttribute('data-country');
+            const country = getCountryById(id);
+            if (!country) return;
+            
+            const prevId = selectedCountryId;
+            selectedCountryId = id;
+
+            // If authenticated, automatically bind this new country to their player profile universally
+            const user = getCurrentUser();
+            if (user?.uid && user?.profileComplete) {
+                const res = await setupProfile(user.player, user.icon, country.name, user.avatarUrl);
+                if (!res.ok) {
+                    alert(res.error || 'Unable to update country.');
+                    selectedCountryId = prevId; // revert
+                    renderCountries(continentId);
+                    return;
+                }
+            }
+
             saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
             renderCountries(continentId);
         });
@@ -649,6 +729,21 @@ function bindPlayEvents() {
         });
     }
 
+    document.querySelectorAll('.emoji-hotkey').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const emoji = btn.getAttribute('data-emoji');
+            if (emoji && gameState.isMultiplayer) {
+                import('./multiplayerApi.js').then(({ sendRoomMessage }) => {
+                    const ctx = gameState.multiplayerModeData;
+                    if (ctx && ctx.roomId && ctx.participantId) {
+                        sendRoomMessage(ctx.roomId, ctx.participantId, 'emoji', emoji).catch(() => {});
+                    }
+                });
+            }
+            document.activeElement?.blur();
+        });
+    });
+
     const restartBtn = document.getElementById('restart-btn');
     if (restartBtn) {
         restartBtn.addEventListener('click', () => {
@@ -657,9 +752,23 @@ function bindPlayEvents() {
             updateWordDisplay();
             document.getElementById('time-display').innerText = gameState.mode;
             document.getElementById('wpm-display').innerText = '0';
-            document.getElementById('errors-display').innerText = '0';
+            const errorsDisplayEl = document.getElementById('errors-display');
+            if (errorsDisplayEl) errorsDisplayEl.innerText = '0';
             document.getElementById('start-btn').classList.remove('hidden');
             restartBtn.classList.add('hidden');
+        });
+    }
+
+    const returnLobbyBtn = document.getElementById('exit-multiplayer-btn');
+    if (returnLobbyBtn) {
+        returnLobbyBtn.addEventListener('click', () => {
+            if (confirm("Return to the multiplayer lobby?")) {
+                gameStarted = false;
+                gameState.isMultiplayer = false;
+                clearInterval(gameState.timerInterval);
+                // Return to multiplayer screen handler cleanly
+                renderScreen('multiplayer');
+            }
         });
     }
 }
@@ -670,6 +779,18 @@ function onGlobalKeyDown(event) {
     if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
     if (event.key === 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return;
     if (!gameStarted) return;
+
+    if (gameState.isMultiplayer && ['1','2','3','4','5','6'].includes(event.key)) {
+        const emojis = ['🔥', '😂', '😭', '💀', '❤️', '👀'];
+        const emoji = emojis[parseInt(event.key) - 1];
+        import('./multiplayerApi.js').then(({ sendRoomMessage }) => {
+            const ctx = gameState.multiplayerModeData;
+            if (ctx && ctx.roomId && ctx.participantId) {
+                sendRoomMessage(ctx.roomId, ctx.participantId, 'emoji', emoji).catch(() => {});
+            }
+        });
+        return;
+    }
 
     if (event.key === ' ' || event.key === 'Backspace') {
         event.preventDefault();
@@ -697,6 +818,9 @@ function updateTick(time) {
     const timeEl = document.getElementById('time-display');
     if (timeEl) timeEl.innerText = time;
 
+    const mpTimerEl = document.getElementById('multiplayer-timer');
+    if (mpTimerEl) mpTimerEl.innerHTML = `<i class="fa-solid fa-clock mr-1"></i> ${time}`;
+
     const gross = calculateGrossWPM(gameState.mode - time, gameState.totalTypedChars);
     const net = calculateNetWPM(gross, gameState.errors, gameState.mode - time);
 
@@ -715,7 +839,8 @@ function updateWordDisplay() {
     const area = document.getElementById('word-display-area');
     if (!area) return;
 
-    document.getElementById('errors-display').innerText = gameState.errors;
+    const errorsDisplayEl = document.getElementById('errors-display');
+    if (errorsDisplayEl) errorsDisplayEl.innerText = gameState.errors;
 
     let html = '';
     const startIdx = Math.max(0, gameState.currentWordIndex - 5);
@@ -838,11 +963,27 @@ function showResults() {
                 </div>
                 <div id="save-status" class="mt-2 text-center text-[10px] font-bold uppercase tracking-widest"></div>
             </div>
-            <button id="restart-btn-end" class="bg-[#004B23] text-[#93D6A0] px-12 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:brightness-125 transition-all active:scale-95">Play Again</button>
+            ${gameState.isMultiplayer ? `
+                <button id="return-lobby-end-btn" class="bg-surface-container-high border border-outline/20 text-[#8A9389] px-12 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:text-white transition-all active:scale-95">Return to Lobby</button>
+            ` : `
+                <button id="restart-btn-end" class="bg-[#004B23] text-[#93D6A0] px-12 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:brightness-125 transition-all active:scale-95">Play Again</button>
+            `}
         </div>
     `;
 
-    document.getElementById('restart-btn-end').addEventListener('click', () => {
-        renderScreen('play');
-    });
+    const restartBtn = document.getElementById('restart-btn-end');
+    if (restartBtn) {
+        restartBtn.addEventListener('click', () => {
+            renderScreen('play');
+        });
+    }
+
+    const returnLobbyBtn = document.getElementById('return-lobby-end-btn');
+    if (returnLobbyBtn) {
+        returnLobbyBtn.addEventListener('click', () => {
+            gameStarted = false;
+            gameState.isMultiplayer = false;
+            renderScreen('multiplayer');
+        });
+    }
 }

@@ -57,6 +57,16 @@ export function subscribeToRoomDetails(roomId, callback) {
   return wsClient.onUpdate(api.multiplayer.getRoomDetails, { roomId }, callback);
 }
 
+export function subscribeToRoomMessages(roomId, callback) {
+  const wsClient = getConvexWsClient();
+  return wsClient.onUpdate(api.multiplayer.getRoomMessages, { roomId }, callback);
+}
+
+export async function sendRoomMessage(roomId, participantId, type, content) {
+  const client = getConvexClient();
+  return await client.mutation(api.multiplayer.sendRoomMessage, { roomId, participantId, type, content });
+}
+
 export async function updateHeartbeat(participantId) {
   const client = getConvexClient();
   return await client.mutation(api.multiplayer.updateHeartbeat, { participantId });

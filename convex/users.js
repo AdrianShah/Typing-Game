@@ -72,7 +72,6 @@ export const updateProfileBasics = mutation({
     const now = Date.now();
     const updates = {
       icon: args.icon,
-      country: args.country,
       profileComplete: args.profileComplete,
       updatedAt: now,
     };
@@ -80,7 +79,7 @@ export const updateProfileBasics = mutation({
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
     const ONE_DAY = 24 * 60 * 60 * 1000;
 
-    // Username and avatar changes are rate-limited so the public profile stays
+    // Username, avatar, and country changes are rate-limited so the public profile stays
     // stable and the client cannot churn identity metadata on every save.
     if (args.player !== existing.player) {
       if (existing.lastUsernameChange && now - existing.lastUsernameChange < THIRTY_DAYS) {
@@ -88,6 +87,16 @@ export const updateProfileBasics = mutation({
       }
       updates.player = args.player;
       updates.lastUsernameChange = now;
+    }
+
+    if (args.country !== existing.country && args.country !== undefined) {
+      if (existing.lastCountryChange && now - existing.lastCountryChange < ONE_DAY) {
+        throw new Error('Country can only be changed once a day.');
+      }
+      updates.country = args.country;
+      updates.lastCountryChange = now;
+    } else {
+      updates.country = args.country;
     }
 
     if (args.imageUrl !== undefined && args.imageUrl !== existing.imageUrl) {
