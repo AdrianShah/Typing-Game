@@ -29,6 +29,7 @@ const CLERK_APPEARANCE = {
         identityPreview: 'bg-[#131313] border border-[#404941]',
         identityPreviewText: 'text-[#E0E0E0]',
         identityPreviewEditButton: 'text-[#E9C176]',
+        otpCodeFieldInput: 'bg-[#131313] border border-[#404941] text-[#E0E0E0]',
     },
 };
 export function getClerkAppearance() {
@@ -96,6 +97,9 @@ function buildCurrentUser(clerkUser, profileRecord) {
         provider: 'clerk',
         profileComplete: Boolean(profileRecord?.profileComplete),
         accessToken: null,
+        lastUsernameChange: profileRecord?.lastUsernameChange || null,
+        lastCountryChange: profileRecord?.lastCountryChange || null,
+        lastAvatarChange: profileRecord?.lastAvatarChange || null,
     };
 }
 
@@ -161,6 +165,7 @@ async function ensureClerk() {
             console.warn('Could not parse clerk domain from key', e);
         }
 
+        // We MUST load the UI script for Vanilla JS, otherwise openSignIn() fails
         if (clerkDomain) {
             await new Promise((resolve, reject) => {
                 const script = document.createElement('script');
@@ -173,13 +178,12 @@ async function ensureClerk() {
             });
         }
 
-        clerkInstance = new Clerk(publishableKey, {
-            appearance: CLERK_APPEARANCE,
-        });
+        clerkInstance = new Clerk(publishableKey);
     }
 
     if (!clerkReadyPromise) {
         clerkReadyPromise = clerkInstance.load({
+            appearance: CLERK_APPEARANCE,
             ui: window.__internal_ClerkUICtor ? { ClerkUI: window.__internal_ClerkUICtor } : undefined,
         });
         await clerkReadyPromise;
@@ -303,6 +307,14 @@ export async function setupProfile(username, icon, country, avatarUrl) {
             imageUrl: nextUser.avatarUrl || undefined,
             profileComplete: true,
         });
+
+        const updatedProfile = await getConvexClient().query(api.users.getProfileByUid, { uid: nextUser.uid });
+        if (updatedProfile) {
+            nextUser.lastUsernameChange = updatedProfile.lastUsernameChange || null;
+            nextUser.lastCountryChange = updatedProfile.lastCountryChange || null;
+            nextUser.lastAvatarChange = updatedProfile.lastAvatarChange || null;
+        }
+
         currentUser = nextUser;
         persistCurrentUser(currentUser);
         notifyListeners();
@@ -315,13 +327,37 @@ export async function setupProfile(username, icon, country, avatarUrl) {
 export async function logout() {
     try {
         const clerk = await ensureClerk();
-        await clerk.signOut();
+        await clerk.signOut({ redirectUrl: window.location.href });
     } catch (error) {
         console.error('Clerk sign out failed:', error);
     } finally {
         clearStoredAuth();
         currentUser = null;
         notifyListeners();
+    }
+}
+
+export async function equipCosmeticAvatar(cosmeticId) {
+    if (!currentUser?.uid) return { ok: false, error: 'Login first.' };
+    try {
+        const result = await getConvexClient().mutation(api.users.equipCosmeticAvatar, {
+            uid: currentUser.uid,
+            cosmeticId,
+        });
+        const refreshed = await getConvexClient().query(api.users.getProfileByUid, { uid: currentUser.uid });
+        if (refreshed) {
+            currentUser = {
+                ...currentUser,
+                avatarUrl: refreshed.imageUrl || currentUser.avatarUrl,
+                icon: refreshed.icon || currentUser.icon,
+                lastAvatarChange: refreshed.lastAvatarChange || currentUser.lastAvatarChange,
+            };
+            persistCurrentUser(currentUser);
+            notifyListeners();
+        }
+        return result;
+    } catch (error) {
+        return { ok: false, error: error.message };
     }
 }
 

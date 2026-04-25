@@ -108,13 +108,14 @@ export async function startServerRun(mode, difficulty) {
     }
 }
 
-export async function fetchLeaderboard(mode = 30, difficulty = 'medium') {
+export async function fetchLeaderboard(mode = 30, difficulty = 'medium', country = null) {
     try {
         const normalizedMode = Number(mode);
         const normalizedDifficulty = isValidDifficulty(difficulty) ? difficulty : 'medium';
         const list = await getConvexClient().query(api.leaderboard.getTopRuns, {
             mode: VALID_MODES.has(normalizedMode) ? normalizedMode : 30,
             difficulty: normalizedDifficulty,
+            country: country || undefined
         });
         return { ok: true, list };
     } catch (err) {
@@ -161,3 +162,25 @@ export async function fetchCountryModifiers() {
         resolve({ ok: true, modifiers, weekNumber: week });
     });
 }
+
+export async function fetchFactionStandings() {
+    return await getConvexClient().query(api.leaderboard.getFactionStandings, {});
+}
+
+export async function fetchCampaignOverview() {
+    return await getConvexClient().query(api.leaderboard.getCampaignOverview, {});
+}
+
+export async function fetchChampionsByWeek(weekKey) {
+    return await getConvexClient().query(api.leaderboard.getChampionsByWeek, {
+        weekKey: weekKey || undefined,
+    });
+}
+
+export async function fetchUserCosmetics(uid) {
+    const user = getCurrentUser();
+    const resolvedUid = uid || user?.uid;
+    if (!resolvedUid) return [];
+    return await getConvexClient().query(api.leaderboard.getUserCosmetics, { uid: resolvedUid });
+}
+

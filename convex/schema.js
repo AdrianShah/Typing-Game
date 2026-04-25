@@ -41,6 +41,8 @@ export default defineSchema({
     acc: v.number(),
     timestamp: v.number(),
     sessionId: v.id('runSessions'),
+    xpEarned: v.optional(v.number()),
+    weekKey: v.optional(v.string()),
   })
     .index('by_uid', ['uid'])
     .index('by_mode_difficulty_netWPM', ['mode', 'difficulty', 'netWPM']),
@@ -126,4 +128,47 @@ export default defineSchema({
   })
     .index('by_roomId', ['roomId'])
     .index('by_participantId', ['participantId']),
+
+  factions: defineTable({
+    country: v.string(),
+    weekKey: v.string(),
+    weeklyXP: v.number(),
+    milestoneTarget: v.number(),
+    milestoneReachedAt: v.optional(v.number()),
+    lifetimeXP: v.number(),
+    totalRuns: v.number(),
+    contributors: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_country", ["country"])
+    .index("by_weekKey", ["weekKey"])
+    .index("by_weekKey_weeklyXP", ["weekKey", "weeklyXP"]),
+
+  userCosmetics: defineTable({
+    uid: v.string(),
+    cosmeticId: v.string(),
+    type: v.string(),
+    sourceCountry: v.optional(v.string()),
+    seasonWeekKey: v.optional(v.string()),
+    unlockedAt: v.number(),
+    equipped: v.boolean(),
+  })
+    .index("by_uid", ["uid"])
+    .index("by_uid_cosmeticId", ["uid", "cosmeticId"]),
+
+  championsSnapshots: defineTable({
+    weekKey: v.string(),
+    uid: v.string(),
+    player: v.string(),
+    icon: v.string(),
+    country: v.string(),
+    region: v.string(),
+    netWPM: v.number(),
+    mode: v.number(),
+    difficulty: v.string(),
+    rank: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_weekKey", ["weekKey"])
+    .index("by_weekKey_region_rank", ["weekKey", "region", "rank"]),
 });

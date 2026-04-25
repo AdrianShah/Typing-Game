@@ -136,3 +136,54 @@ export const getProfileByEmail = query({
       .unique();
   },
 });
+
+export const equipCosmeticAvatar = mutation({
+  args: {
+    uid: v.string(),
+    cosmeticId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query('users')
+      .withIndex('by_uid', (q) => q.eq('uid', args.uid))
+      .unique();
+    if (!user) {
+      throw new Error('User profile not found.');
+    }
+
+    const ownedCosmetic = await ctx.db
+      .query('userCosmetics')
+      .withIndex('by_uid_cosmeticId', (q) => q.eq('uid', args.uid).eq('cosmeticId', args.cosmeticId))
+      .unique();
+    if (!ownedCosmetic) {
+      throw new Error('You do not own this cosmetic.');
+    }
+
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    if (user.lastAvatarChange && now - user.lastAvatarChange < ONE_DAY) {
+      throw new Error('Avatar can only be changed once a day.');
+    }
+
+    const allOwned = await ctx.db
+      .query('userCosmetics')
+      .withIndex('by_uid', (q) => q.eq('uid', args.uid))
+      .collect();
+    for (const cosmetic of allOwned) {
+      if (cosmetic.equipped) {
+        await ctx.db.patch(cosmetic._id, { equipped: false });
+      }
+    }
+    await ctx.db.patch(ownedCosmetic._id, { equipped: true });
+
+    const avatarUrl = `https://api.dicebear.com/7.x/micah/svg?seed=${encodeURIComponent(args.cosmeticId)}&backgroundColor=131313`;
+    await ctx.db.patch(user._id, {
+      imageUrl: avatarUrl,
+      icon: avatarUrl,
+      lastAvatarChange: now,
+      updatedAt: now,
+    });
+
+    return { ok: true, avatarUrl };
+  },
+});

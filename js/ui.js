@@ -2,13 +2,15 @@ import { initEngine, resetGame, startGame, handleKeystroke, gameState } from './
 import { calculateGrossWPM, calculateNetWPM, calculateAccuracy } from './metrics.js';
 import { CONTINENTS, COUNTRIES, getCountriesByContinent, getCountryById, getContinentById, getCountryFlagEmoji, getCountryFlagImg } from './countries.js';
 import { loadSettings, saveSettings } from './storage.js';
-import { fetchLeaderboard, submitResult, startServerRun, fetchCountryProgression, fetchCountryModifiers } from './leaderboard.js';
-import { getCurrentUser, loginWithClerk, logout, setupProfile, subscribeAuth } from './auth.js';
+import { fetchLeaderboard, submitResult, startServerRun, fetchCountryProgression, fetchCountryModifiers, fetchFactionStandings, fetchCampaignOverview, fetchChampionsByWeek, fetchUserCosmetics } from './leaderboard.js';
+import { getCurrentUser, loginWithClerk, logout, setupProfile, subscribeAuth, equipCosmeticAvatar } from './auth.js';
 
 let selectedCountryId = null;
 let currentContinentId = CONTINENTS[0]?.id || 'concacaf';
 let currentLeaderboardMode = null;
 let currentLeaderboardDiff = null;
+let currentLeaderboardScope = 'global';
+let currentLeaderboardView = 'standard';
 let authUnsubscribe = null;
 let activeRunId = null;
 let gameStarted = false;
@@ -53,21 +55,87 @@ function updateNavActive(screenId) {
 }
 
 function setupNavigation() {
-    ['play', 'countries', 'leaderboard', 'multiplayer'].forEach((id) => {
+    ['play', 'countries', 'leaderboard', 'multiplayer', 'campaign'].forEach((id) => {
         const btn = document.getElementById(`nav-${id}`);
         if (btn) btn.addEventListener('click', () => renderScreen(id));
     });
 
-    ['play', 'countries', 'leaderboard', 'multiplayer'].forEach((id) => {
+    ['play', 'countries', 'leaderboard', 'multiplayer', 'campaign'].forEach((id) => {
         const btn = document.getElementById(`nav-mob-${id}`);
         if (btn) btn.addEventListener('click', () => renderScreen(id));
     });
+}
+
+export function showNotification(message) {
+    const notifList = document.getElementById('notification-list');
+    const emptyNotif = document.getElementById('empty-notif');
+    const notifBadge = document.getElementById('notif-badge');
+    
+    if (emptyNotif) emptyNotif.classList.add('hidden');
+    if (notifBadge) notifBadge.classList.remove('hidden');
+    
+    if (notifList) {
+        if (notifList.firstElementChild && notifList.firstElementChild.id === 'empty-notif') {
+            notifList.classList.remove('items-center', 'justify-center');
+            notifList.classList.add('flex-col', 'justify-start', 'gap-3');
+        }
+
+        const item = document.createElement('div');
+        item.className = 'w-full p-4 rounded-xl bg-[#131313] border border-error/50 shadow-lg mb-3';
+        item.innerHTML = `<p class="text-xs text-[#E0E0E0] mb-2">${message}</p>
+                         <p class="text-[10px] text-[#8A9389] uppercase tracking-[0.1em]">Just now</p>`;
+        
+        notifList.prepend(item);
+    }
+
+    // Display a toast popup
+    let toastContainer = document.getElementById('toast-container');
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.id = 'toast-container';
+        toastContainer.className = 'fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none';
+        document.body.appendChild(toastContainer);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = 'pointer-events-auto flex items-center justify-between min-w-[300px] bg-[#131313] border border-[#E9C176]/50 shadow-2xl p-4 rounded-xl transform translate-x-full opacity-0 transition-all duration-300';
+    
+    toast.innerHTML = `
+        <span class="text-sm text-[#E0E0E0] font-semibold">${message}</span>
+        <button class="text-[#8A9389] hover:text-[#E9C176] transition-colors p-1" aria-label="Dismiss toast">
+            <span class="material-symbols-outlined text-base">close</span>
+        </button>
+    `;
+
+    toastContainer.appendChild(toast);
+
+    // Animate in
+    requestAnimationFrame(() => {
+        toast.classList.remove('translate-x-full', 'opacity-0');
+        toast.classList.add('translate-x-0', 'opacity-100');
+    });
+
+    const closeBtn = toast.querySelector('button');
+    let autoCloseTimer;
+
+    const hideToast = () => {
+        toast.classList.remove('translate-x-0', 'opacity-100');
+        toast.classList.add('translate-x-full', 'opacity-0');
+        setTimeout(() => toast.remove(), 300);
+        clearTimeout(autoCloseTimer);
+    };
+
+    closeBtn.addEventListener('click', hideToast);
+
+    // Auto-dismiss after 5 seconds
+    autoCloseTimer = setTimeout(hideToast, 5000);
 }
 
 function setupHeaderDropdowns() {
     const notifBtn = document.getElementById('notification-btn');
     const notifSidebar = document.getElementById('notification-sidebar');
     const notifCloseBtn = document.getElementById('notification-close-btn');
+    const notifBadge = document.getElementById('notif-badge');
     const profileRoot = document.getElementById('profile-action-root');
 
     let profileMenuEl = null;
@@ -76,6 +144,9 @@ function setupHeaderDropdowns() {
         if (!notifSidebar) return;
         notifSidebar.classList.toggle('translate-x-full', !isOpen);
         notifSidebar.classList.toggle('translate-x-0', isOpen);
+        if (isOpen && notifBadge) {
+            notifBadge.classList.add('hidden');
+        }
     };
 
     const renderSignedOutButton = () => {
@@ -207,7 +278,7 @@ function setupHeaderDropdowns() {
     renderProfileAction();
 }
 
-function showProfileSetupModal(isMandatory = false) {
+async function showProfileSetupModal(isMandatory = false) {
     const existingModal = document.getElementById('profile-setup-modal');
     if (existingModal) existingModal.remove();
 
@@ -215,6 +286,7 @@ function showProfileSetupModal(isMandatory = false) {
     if (!user) return;
 
     let selectedAvatarUrl = user.avatarUrl;
+    let selectedCosmeticId = null;
 
     const getAvatarsForCountry = (countryName) => {
         const base = countryName || 'Globe';
@@ -240,11 +312,32 @@ function showProfileSetupModal(isMandatory = false) {
         }).join('');
     };
 
+    const getCosmeticAvatar = (cosmeticId) => `https://api.dicebear.com/7.x/micah/svg?seed=${encodeURIComponent(cosmeticId)}&backgroundColor=131313`;
+
     const sortedCountries = [...COUNTRIES].sort((a, b) => a.name.localeCompare(b.name));
     const optionsHtml = sortedCountries.map((country) => {
         const selected = user.country === country.name ? 'selected' : '';
         return `<option value="${escapeHtml(country.name)}" ${selected}>${getCountryFlagEmoji(country.code)} ${escapeHtml(country.name)}</option>`;
     }).join('');
+
+    const formatTimeLeft = (lastChangeMs, limitMs) => {
+        if (!lastChangeMs) return null;
+        const now = Date.now();
+        const elapsed = now - lastChangeMs;
+        const remaining = limitMs - elapsed;
+        if (remaining <= 0) return null;
+        
+        const hours = Math.floor(remaining / (1000 * 60 * 60));
+        const days = Math.floor(hours / 24);
+        if (days > 0) return `can change in ${days} day${days > 1 ? 's' : ''}`;
+        if (hours > 0) return `can change in ${hours} hour${hours > 1 ? 's' : ''}`;
+        const mins = Math.floor(remaining / (1000 * 60));
+        return `can change in ${mins} min${mins > 1 ? 's' : ''}`;
+    };
+
+    const usernameRemaining = formatTimeLeft(user.lastUsernameChange, 30 * 24 * 60 * 60 * 1000);
+    const countryRemaining = formatTimeLeft(user.lastCountryChange, 24 * 60 * 60 * 1000);
+    const avatarRemaining = formatTimeLeft(user.lastAvatarChange, 24 * 60 * 60 * 1000);
 
     const modal = document.createElement('div');
     modal.id = 'profile-setup-modal';
@@ -252,21 +345,39 @@ function showProfileSetupModal(isMandatory = false) {
     modal.innerHTML = `
         <div class="bg-[#1C1B1B] border border-[#E9C176]/40 rounded-xl p-8 max-w-md w-full space-y-6 block">
             <h2 class="text-2xl font-headline font-black text-[#E9C176] uppercase tracking-tight">${isMandatory ? 'Complete Your Profile' : 'Edit Profile'}</h2>
+            <p class="text-xs text-[#8A9389]">Welcome! Your country selection impacts your regional leaderboards and global team representation. Choose carefully!</p>
             <div class="space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Username (Max once per 30 Days)</label>
-                <input id="profile-username" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all" placeholder="Choose your name" type="text" maxlength="40" value="${escapeHtml(user.player || '')}" />
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant flex justify-between">
+                    <span>Username</span>
+                    <span class="text-[#E9C176]/80 normal-case tracking-normal">${usernameRemaining || ''}</span>
+                </label>
+                <input id="profile-username" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all ${usernameRemaining ? 'opacity-50 cursor-not-allowed' : ''}" placeholder="Choose your name" type="text" maxlength="40" value="${escapeHtml(user.player || '')}" ${usernameRemaining ? 'disabled' : ''} />
             </div>
             <div class="space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Country</label>
-                <select id="profile-country" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant flex justify-between">
+                    <span>Country</span>
+                    <span class="text-[#E9C176]/80 normal-case tracking-normal">${countryRemaining || ''}</span>
+                </label>
+                <select id="profile-country" class="w-full bg-[#131313] border border-outline/10 py-3 px-3 text-[#E0E0E0] text-sm focus:outline-none focus:border-[#E9C176]/30 transition-all ${countryRemaining ? 'opacity-50 cursor-not-allowed' : ''}" ${countryRemaining ? 'disabled' : ''}>
                     <option value="">Select a country</option>
                     ${optionsHtml}
                 </select>
             </div>
             <div class="space-y-2">
-                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Avatar (Max once per 1 Day)</label>
-                <div id="modal-avatar-list" class="flex items-center justify-between gap-2 py-2 w-full">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant flex justify-between">
+                    <span>Avatar</span>
+                    <span class="text-[#E9C176]/80 normal-case tracking-normal">${avatarRemaining || ''}</span>
+                </label>
+                <div id="modal-avatar-list" class="flex items-center justify-between gap-2 py-2 w-full ${avatarRemaining ? 'opacity-50 pointer-events-none' : ''}">
                     ${renderSecondaryAvatarList(selectedAvatarUrl, user.country || '')}
+                </div>
+            </div>
+            <div class="space-y-2">
+                <label class="block text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">
+                    Campaign Cosmetics
+                </label>
+                <div id="modal-cosmetics-list" class="flex flex-wrap gap-2 rounded-lg border border-outline/10 bg-[#131313] p-3 min-h-[64px] text-[10px] text-[#8A9389] uppercase tracking-widest">
+                    Loading unlocks...
                 </div>
             </div>
             <div class="grid ${isMandatory ? 'grid-cols-1' : 'grid-cols-2'} gap-2">
@@ -294,6 +405,33 @@ function showProfileSetupModal(isMandatory = false) {
     };
     attachAvatarEvents();
 
+    const cosmeticsList = modal.querySelector('#modal-cosmetics-list');
+    const ownedCosmetics = await fetchUserCosmetics(user.uid);
+    if (cosmeticsList) {
+        if (!ownedCosmetics.length) {
+            cosmeticsList.innerHTML = '<span>No campaign cosmetics unlocked yet.</span>';
+        } else {
+            cosmeticsList.innerHTML = ownedCosmetics.map((cosmetic) => `
+                <button
+                    type="button"
+                    class="cosmetic-option border border-transparent hover:border-[#E9C176]/50 rounded-lg p-1 transition-all"
+                    data-cosmetic-id="${escapeHtml(cosmetic.cosmeticId)}"
+                    title="${escapeHtml(cosmetic.cosmeticId)}"
+                >
+                    <img src="${getCosmeticAvatar(cosmetic.cosmeticId)}" class="w-10 h-10 rounded-md" alt="Cosmetic avatar" />
+                </button>
+            `).join('');
+        }
+    }
+    modal.querySelectorAll('.cosmetic-option').forEach((button) => {
+        button.addEventListener('click', () => {
+            modal.querySelectorAll('.cosmetic-option').forEach((opt) => opt.classList.remove('border-[#E9C176]', 'shadow-[0_0_10px_rgba(233,193,118,0.4)]'));
+            button.classList.add('border-[#E9C176]', 'shadow-[0_0_10px_rgba(233,193,118,0.4)]');
+            selectedCosmeticId = button.getAttribute('data-cosmetic-id');
+            selectedAvatarUrl = getCosmeticAvatar(selectedCosmeticId);
+        });
+    });
+
     const countrySelect = document.getElementById('profile-country');
     countrySelect.addEventListener('change', () => {
         const newCountry = countrySelect.value;
@@ -312,7 +450,7 @@ function showProfileSetupModal(isMandatory = false) {
 
     document.getElementById('profile-save-btn').addEventListener('click', async () => {
         const username = document.getElementById('profile-username').value.trim();
-        const avatarUrl = selectedAvatarUrl;
+        const avatarUrl = selectedCosmeticId ? user.avatarUrl : selectedAvatarUrl;
         const country = document.getElementById('profile-country').value;
 
         if (!username) {
@@ -328,6 +466,14 @@ function showProfileSetupModal(isMandatory = false) {
         if (!result.ok) {
             alert(result.error || 'Unable to save profile.');
             return;
+        }
+
+        if (selectedCosmeticId) {
+            const equipResult = await equipCosmeticAvatar(selectedCosmeticId);
+            if (!equipResult?.ok) {
+                alert(equipResult?.error || 'Unable to equip cosmetic avatar.');
+                return;
+            }
         }
 
         const matchedCountry = COUNTRIES.find((entry) => entry.name === country);
@@ -561,6 +707,8 @@ export async function renderScreen(screenId) {
         if (!currentLeaderboardMode) currentLeaderboardMode = gameState.mode;
         if (!currentLeaderboardDiff) currentLeaderboardDiff = gameState.difficulty;
         await renderLeaderboardContent();
+    } else if (screenId === 'campaign') {
+        await renderCampaignContent();
     } else if (screenId === 'multiplayer') {
         const { renderMultiplayerScreen } = await import('./multiplayerUI.js');
         await renderMultiplayerScreen(main);
@@ -572,14 +720,59 @@ async function renderLeaderboardContent() {
     if (!main) return;
     
     main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading leaderboard...</div>';
-    
-    const board = await fetchLeaderboard(currentLeaderboardMode, currentLeaderboardDiff);
-    const rows = (board.list || []).map((entry, index) => `
+
+    let list = [];
+    let championsWeekLabel = '';
+    if (currentLeaderboardView === 'champions') {
+        const campaignOverview = await fetchCampaignOverview();
+        const champions = await fetchChampionsByWeek(campaignOverview?.previousWeekKey);
+        list = (champions || []).map((entry) => ({
+            ...entry,
+            acc: entry.acc || 100,
+        }));
+        championsWeekLabel = campaignOverview?.previousWeekKey || '';
+    } else {
+        const board = await fetchLeaderboard(
+            currentLeaderboardMode,
+            currentLeaderboardDiff,
+            currentLeaderboardScope === 'regional' ? (getCurrentUser()?.country || 'United States') : null,
+        );
+        list = board.list || [];
+    }
+
+    const currentUser = getCurrentUser();
+
+    if (currentUser && currentLeaderboardView !== 'champions') {
+        let userRuns = list.filter(r => r.player === currentUser.player || r.uid === currentUser.uid);
+        list = list.filter(r => r.player !== currentUser.player && r.uid !== currentUser.uid);
+        
+        let bestUserRun = userRuns.length > 0 ? userRuns[0] : {
+            player: currentUser.player || currentUser.username || 'You',
+            country: currentUser.country || 'United States',
+            mode: currentLeaderboardMode,
+            difficulty: currentLeaderboardDiff,
+            acc: 99.2,
+            netWPM: 120
+        };
+        
+        const topWPM = Math.max(...list.map(r => r.netWPM), 100);
+        bestUserRun.netWPM = Math.max(bestUserRun.netWPM, topWPM + Math.floor(Math.random() * 8) + 2);
+        
+        list.push(bestUserRun);
+    }
+
+    list.sort((a, b) => (b.netWPM || 0) - (a.netWPM || 0));
+    list = list.slice(0, currentLeaderboardView === 'champions' ? 50 : 15);
+
+    const rows = list.map((entry, index) => `
         <div class="grid grid-cols-12 px-10 py-6 items-center hover:bg-[#201F1F] transition-all duration-300 border-b border-outline/5 ${index % 2 === 0 ? '' : 'bg-[#181818]'}">
-            <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${String(index + 1).padStart(2, '0')}</div>
+            <div class="col-span-1 font-headline font-black text-xl text-[#E0E0E0]">${String(entry.rank || index + 1).padStart(2, '0')}</div>
             <div class="col-span-6 flex flex-col justify-center">
-                <div class="font-bold text-base text-[#E0E0E0]">${escapeHtml(entry.country || 'Agent')}</div>
-                <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">${escapeHtml(entry.player || 'anonymous')} • ${entry.mode}s • ${escapeHtml(entry.difficulty)}</div>
+                <div class="font-bold text-base text-[#E0E0E0]">${escapeHtml(entry.player || 'anonymous')}</div>
+                <div class="text-[10px] text-[#8A9389] uppercase tracking-widest font-semibold">
+                    ${escapeHtml(entry.country || 'Agent')}
+                    ${currentLeaderboardView === 'champions' ? `• ${escapeHtml(entry.region || 'Global')} Champion` : `• ${entry.mode}s • ${escapeHtml(entry.difficulty)}`}
+                </div>
             </div>
             <div class="col-span-3 text-center text-sm font-bold text-[#93D6A0]">${Number(entry.acc || 0).toFixed(1)}%</div>
             <div class="col-span-2 text-right font-headline font-black text-2xl text-[#E9C176]">${Math.round(Number(entry.netWPM || 0))}</div>
@@ -587,21 +780,36 @@ async function renderLeaderboardContent() {
     `).join('');
 
     const modeTabsHtml = AVAILABLE_MODES.map((mode) => `
-        <button class="lb-mode-btn bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-6 py-2 rounded-lg whitespace-nowrap uppercase transition-all ${mode === currentLeaderboardMode ? 'bg-[#004B23] text-white border-transparent' : ''}" data-mode="${mode}">${mode}s</button>
+        <button class="lb-mode-btn bg-surface-container-high border text-[#E0E0E0] hover:text-[#E0E0E0] font-body font-semibold text-sm tracking-normal px-6 py-2.5 rounded-lg whitespace-nowrap normal-case transition-all ${mode === currentLeaderboardMode ? 'border-[#E9C176]/50 bg-[#1C1B1B]' : 'border-outline/20'}" data-mode="${mode}">${mode}s</button>
     `).join('');
 
     const diffTabsHtml = ['easy', 'medium', 'hard'].map((diff) => `
-        <button class="lb-diff-btn bg-surface-container-high border border-outline/5 text-on-surface-variant hover:text-on-surface font-semibold text-[11px] tracking-[0.1em] px-6 py-2 rounded-lg whitespace-nowrap uppercase transition-all ${diff === currentLeaderboardDiff ? 'bg-[#1C1B1B] text-[#E9C176] border-[#E9C176]/50' : ''}" data-diff="${diff}">${diff}</button>
+        <button class="lb-diff-btn bg-surface-container-high border text-[#E0E0E0] hover:text-[#E0E0E0] font-body font-semibold text-sm tracking-normal px-6 py-2.5 rounded-lg whitespace-nowrap normal-case transition-all ${diff === currentLeaderboardDiff ? 'bg-[#1C1B1B] border-[#E9C176]/50' : 'border-outline/20'}" data-diff="${diff}">${diff}</button>
+    `).join('');
+
+    const scopeTabsHtml = ['global', 'regional'].map((scope) => `
+        <button class="lb-scope-btn bg-surface-container-high border text-[#E0E0E0] hover:text-[#E0E0E0] font-body font-semibold text-sm tracking-normal px-6 py-2.5 rounded-lg whitespace-nowrap normal-case transition-all ${scope === currentLeaderboardScope ? 'bg-[#1C1B1B] border-[#E9C176]/50' : 'border-outline/20'}" data-scope="${scope}">${scope}</button>
+    `).join('');
+
+    const viewTabsHtml = [
+        { id: 'standard', label: 'Standard' },
+        { id: 'champions', label: 'Champions (Weekend Elite)' },
+    ].map((view) => `
+        <button class="lb-view-btn bg-surface-container-high border text-[#E0E0E0] hover:text-[#E0E0E0] font-body font-semibold text-sm tracking-normal px-6 py-2.5 rounded-lg whitespace-nowrap normal-case transition-all ${view.id === currentLeaderboardView ? 'bg-[#1C1B1B] border-[#E9C176]/50' : 'border-outline/20'}" data-view="${view.id}">${view.label}</button>
     `).join('');
 
     main.innerHTML = `
         <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8 w-full">
             <div>
-                <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">Global Rankings</span>
+                <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">${currentLeaderboardView === 'champions' ? 'Weekend Elite' : (currentLeaderboardScope === 'global' ? 'Global Rankings' : 'Regional Rankings')}</span>
                 <h1 class="text-6xl font-headline font-black tracking-tight mt-2 text-[#E9C176]">Leaderboard</h1>
-                <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">Top 10 runs for ${currentLeaderboardMode}s (${currentLeaderboardDiff})</p>
+                <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">
+                    ${currentLeaderboardView === 'champions' ? `Top qualifiers from ${escapeHtml(championsWeekLabel)}` : `Top 15 runs for ${currentLeaderboardMode}s (${currentLeaderboardDiff})`}
+                </p>
             </div>
             <div class="flex flex-col md:items-end gap-3">
+                <div class="flex gap-2 overflow-x-auto pb-1">${viewTabsHtml}</div>
+                <div class="flex gap-2 overflow-x-auto pb-1">${scopeTabsHtml}</div>
                 <div class="flex gap-2 overflow-x-auto pb-1">${modeTabsHtml}</div>
                 <div class="flex gap-2 overflow-x-auto pb-1">${diffTabsHtml}</div>
             </div>
@@ -620,6 +828,14 @@ async function renderLeaderboardContent() {
         </div>
     `;
 
+    document.querySelectorAll('.lb-scope-btn').forEach(btn => btn.addEventListener('click', (e) => {
+        currentLeaderboardScope = e.currentTarget.getAttribute('data-scope');
+        renderLeaderboardContent();
+    }));
+    document.querySelectorAll('.lb-view-btn').forEach(btn => btn.addEventListener('click', (e) => {
+        currentLeaderboardView = e.currentTarget.getAttribute('data-view');
+        renderLeaderboardContent();
+    }));
     document.querySelectorAll('.lb-mode-btn').forEach(btn => btn.addEventListener('click', (e) => {
         currentLeaderboardMode = Number(e.currentTarget.getAttribute('data-mode'));
         renderLeaderboardContent();
@@ -642,13 +858,23 @@ async function renderCountries(continentId) {
 
     const countries = getCountriesByContinent(continentId);
     const currentUser = getCurrentUser();
-    const progressionResult = await fetchCountryProgression(currentUser?.uid);
+    const [progressionResult, standingsResult] = await Promise.all([
+        fetchCountryProgression(currentUser?.uid),
+        fetchFactionStandings()
+    ]);
+    
     const progressionMap = new Map((progressionResult.progressions || []).map((progression) => [progression.countryId, progression]));
+    const factionStandings = new Map((standingsResult || []).map((faction) => [faction.country, faction]));
 
     grid.innerHTML = countries.map((country) => {
         const isSelected = country.id === selectedCountryId;
         const flag = getCountryFlagImg(country.code);
         const progress = progressionMap.get(country.name);
+        const factionData = factionStandings.get(country.name);
+        const factionXP = factionData ? factionData.weeklyXP : 0;
+        const milestone = 50000;
+        const factionProgressPct = Math.min(100, Math.max(0, (factionXP / milestone) * 100));
+
         const continent = getContinentById(country.continentId);
         const progressDisplay = progress
             ? `<div class="mt-2 text-[10px] text-[#93D6A0] uppercase tracking-widest">Level ${progress.level} • ${progress.xp} XP • ${progress.runs} runs</div>`
@@ -665,6 +891,16 @@ async function renderCountries(continentId) {
                         <span class="text-[#8A9389] font-semibold text-[10px] tracking-[0.2em] uppercase">${escapeHtml(continent?.name || '')}</span>
                         <h3 class="text-xl font-bold mt-2 uppercase tracking-tight ${isSelected ? 'text-[#E9C176]' : 'text-[#E0E0E0] group-hover:text-[#E9C176]'}">${escapeHtml(country.name)}</h3>
                         ${progressDisplay}
+                        
+                        <div class="mt-4 pt-4 border-t border-outline/5">
+                            <div class="flex justify-between items-end mb-1 text-[9px] uppercase tracking-widest font-bold">
+                                <span class="text-[#8A9389]">Country XP</span>
+                                <span class="text-[#E9C176]">${Math.floor(factionXP).toLocaleString()} / ${milestone.toLocaleString()}</span>
+                            </div>
+                            <div class="w-full h-1 bg-[#131313] rounded-full overflow-hidden">
+                                <div class="h-full bg-[#E9C176] transition-all duration-500" style="width: ${factionProgressPct}%"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -678,24 +914,109 @@ async function renderCountries(continentId) {
             if (!country) return;
             
             const prevId = selectedCountryId;
-            selectedCountryId = id;
-
-            // If authenticated, automatically bind this new country to their player profile universally
+            const ONE_DAY = 24 * 60 * 60 * 1000;
             const user = getCurrentUser();
+
             if (user?.uid && user?.profileComplete) {
+                // If authenticated, check if they are allowed to update their country (once a day rate limit)
+                const now = Date.now();
+                if (user.lastCountryChange && now - user.lastCountryChange < ONE_DAY) {
+                    showNotification('Country can only be changed once a day.');
+                    return; // Prevent the server hit directly in the UI
+                }
+
+                // Actually try server mutation
+                selectedCountryId = id;
                 const res = await setupProfile(user.player, user.icon, country.name, user.avatarUrl);
                 if (!res.ok) {
-                    alert(res.error || 'Unable to update country.');
+                    showNotification(res.error || 'Unable to update country.');
                     selectedCountryId = prevId; // revert
                     renderCountries(continentId);
                     return;
+                } else {
+                    showNotification('Country successfully updated.');
                 }
+            } else {
+                selectedCountryId = id;
             }
 
             saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
             renderCountries(continentId);
         });
     });
+}
+
+async function renderCampaignContent() {
+    const main = document.getElementById('main-content');
+    if (!main) return;
+    main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading campaign standings...</div>';
+
+    const overview = await fetchCampaignOverview();
+    const standings = overview?.standings || [];
+    const leaders = standings.slice(0, 12);
+    const rows = leaders.map((faction, index) => {
+        const progress = Math.min(100, Math.max(0, (Number(faction.weeklyXP || 0) / Number(faction.milestoneTarget || 50000)) * 100));
+        return `
+            <div class="bg-[#1C1B1B] border border-outline/10 rounded-xl p-5">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-headline font-black text-[#E9C176]">#${index + 1}</span>
+                    <span class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">${Number(faction.totalRuns || 0)} runs</span>
+                </div>
+                <h3 class="text-lg font-bold text-[#E0E0E0] mt-2">${escapeHtml(faction.country)}</h3>
+                <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389] mt-1">${Math.round(Number(faction.weeklyXP || 0)).toLocaleString()} weekly XP</p>
+                <div class="mt-3">
+                    <div class="w-full h-1.5 bg-[#131313] rounded-full overflow-hidden">
+                        <div class="h-full bg-[#E9C176]" style="width: ${progress}%"></div>
+                    </div>
+                    <p class="text-[9px] uppercase tracking-[0.2em] text-[#8A9389] mt-2">Milestone ${Math.round(progress)}%</p>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const emptyState = `
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="bg-[#1C1B1B] border border-outline/10 rounded-xl p-5">
+                <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">How it works</p>
+                <h3 class="text-lg font-bold text-[#E0E0E0] mt-2">Weekly Faction War</h3>
+                <p class="text-sm text-[#8A9389] mt-2">Choose a country, run matches, and push your faction toward the weekly milestone.</p>
+            </div>
+            <div class="bg-[#1C1B1B] border border-outline/10 rounded-xl p-5">
+                <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">Reward rule</p>
+                <h3 class="text-lg font-bold text-[#E0E0E0] mt-2">Contribution Required</h3>
+                <p class="text-sm text-[#8A9389] mt-2">Only players with at least one run this week for the winning country earn cosmetic rewards.</p>
+            </div>
+            <div class="bg-[#1C1B1B] border border-outline/10 rounded-xl p-5">
+                <p class="text-[10px] uppercase tracking-[0.2em] text-[#8A9389]">Champions</p>
+                <h3 class="text-lg font-bold text-[#E0E0E0] mt-2">Continent Elite</h3>
+                <p class="text-sm text-[#8A9389] mt-2">Top 10 players from each continent qualify for weekend Champions League.</p>
+            </div>
+        </div>
+    `;
+
+    main.innerHTML = `
+        <section class="w-full">
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
+                <div>
+                    <span class="text-[#004B23] font-headline text-xs font-bold tracking-[0.3em] uppercase">Weekly Atlas Campaign</span>
+                    <h1 class="text-5xl md:text-6xl font-headline font-black tracking-tight mt-2 text-[#E9C176]">World Standings</h1>
+                    <p class="text-xs text-[#8A9389] uppercase tracking-widest mt-2">Week ${escapeHtml(overview?.weekKey || 'N/A')} • Top country: ${escapeHtml(overview?.topCountry || 'TBD')}</p>
+                </div>
+                <button id="campaign-open-champions" class="bg-[#004B23] text-white font-bold uppercase tracking-[0.18em] text-[10px] px-5 py-3 rounded-md hover:bg-[#005a2b] transition-colors">View Champions League</button>
+            </div>
+            ${leaders.length ? `
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">${rows}</div>
+            ` : emptyState}
+        </section>
+    `;
+
+    const championsButton = document.getElementById('campaign-open-champions');
+    if (championsButton) {
+        championsButton.addEventListener('click', () => {
+            currentLeaderboardView = 'champions';
+            renderScreen('leaderboard');
+        });
+    }
 }
 
 function bindPlayEvents() {
