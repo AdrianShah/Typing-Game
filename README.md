@@ -48,6 +48,11 @@ The frontend requires the following keys exposed to Vite:
 - `VITE_CONVEX_URL` - Convex HTTP client URL.
 - `VITE_CLERK_PUBLISHABLE_KEY` - Public Clerk publishable key.
 
+Note: For GitHub Pages deployment the Clerk publishable key must be added
+to the repository Secrets as `VITE_CLERK_PUBLISHABLE_KEY`. The deploy
+workflow reads this secret during `npm run build` so the client can
+initialize Clerk on the live site.
+
 If you add server-side Clerk verification, insert the `CLERK_SECRET_KEY` into your Convex deployment dashboard, **do not** expose it to the frontend via `.env.local`.
 
 ## Scripts
