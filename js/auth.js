@@ -48,6 +48,19 @@ function notifyListeners() {
 }
 
 function getClerkPublishableKey() {
+    // Prefer an explicit runtime override (useful for GitHub Pages or static hosts)
+    try {
+        if (typeof window !== 'undefined' && window.__CLERK_PUBLISHABLE_KEY) {
+            return window.__CLERK_PUBLISHABLE_KEY;
+        }
+        if (typeof document !== 'undefined') {
+            const meta = document.querySelector('meta[name="clerk-publishable-key"]');
+            if (meta?.content) return meta.content;
+        }
+    } catch (e) {
+        // ignore DOM access errors in non-browser contexts
+    }
+
     return import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
 }
 
@@ -149,7 +162,8 @@ async function refreshFromClerk(clerkUser) {
 async function ensureClerk() {
     const publishableKey = getClerkPublishableKey();
     if (!publishableKey) {
-        throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in the environment.');
+        console.warn('Clerk publishable key not provided. Authentication disabled.');
+        return null;
     }
 
     if (!clerkInstance) {
@@ -210,7 +224,7 @@ async function ensureClerk() {
 
 export async function mountClerkUserButton(targetNode) {
     const clerk = await ensureClerk();
-    if (!targetNode) return null;
+    if (!targetNode || !clerk) return null;
 
     if (typeof clerk.unmountUserButton === 'function') {
         clerk.unmountUserButton(targetNode);
@@ -227,6 +241,7 @@ export async function mountClerkUserButton(targetNode) {
 
 export async function unmountClerkUserButton(targetNode) {
     const clerk = await ensureClerk();
+    if (!clerk) return;
     if (targetNode && typeof clerk.unmountUserButton === 'function') {
         clerk.unmountUserButton(targetNode);
     }
@@ -241,7 +256,13 @@ export async function initAuth() {
 
     try {
         const clerk = await ensureClerk();
-        if (clerk.user) {
+        if (!clerk) {
+            // Clerk not configured; keep stored profile if any and bail out.
+            if (!storedProfile) {
+                currentUser = null;
+                notifyListeners();
+            }
+        } else if (clerk.user) {
             await refreshFromClerk(clerk.user);
         } else if (!storedProfile) {
             currentUser = null;
@@ -261,6 +282,7 @@ export async function initAuth() {
 export async function loginWithClerk() {
     try {
         const clerk = await ensureClerk();
+        if (!clerk) return { ok: false, error: 'Clerk not configured' };
 
         if (typeof clerk.openSignIn === 'function') {
             await clerk.openSignIn({
@@ -327,7 +349,9 @@ export async function setupProfile(username, icon, country, avatarUrl) {
 export async function logout() {
     try {
         const clerk = await ensureClerk();
-        await clerk.signOut({ redirectUrl: window.location.href });
+        if (clerk && typeof clerk.signOut === 'function') {
+            await clerk.signOut({ redirectUrl: window.location.href });
+        }
     } catch (error) {
         console.error('Clerk sign out failed:', error);
     } finally {
