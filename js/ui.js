@@ -443,47 +443,87 @@ async function showProfileSetupModal(isMandatory = false) {
     });
 
     if (!isMandatory) {
-        document.getElementById('profile-cancel-btn').addEventListener('click', () => {
-            modal.remove();
-        });
+        const cancelBtn = document.getElementById('profile-cancel-btn');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => {
+                console.log('[UI] Profile cancel clicked');
+                modal.remove();
+            });
+        } else {
+            console.warn('[UI] profile-cancel-btn not found in DOM');
+        }
     }
 
-    document.getElementById('profile-save-btn').addEventListener('click', async () => {
-        const username = document.getElementById('profile-username').value.trim();
-        const avatarUrl = selectedCosmeticId ? user.avatarUrl : selectedAvatarUrl;
-        const country = document.getElementById('profile-country').value;
+    const saveBtn = document.getElementById('profile-save-btn');
+    if (!saveBtn) {
+        console.error('[UI] profile-save-btn not found in DOM');
+        return;
+    }
+    
+    saveBtn.addEventListener('click', async () => {
+        try {
+            console.log('[UI] Profile save started');
+            const username = document.getElementById('profile-username').value.trim();
+            const avatarUrl = selectedCosmeticId ? user.avatarUrl : selectedAvatarUrl;
+            const country = document.getElementById('profile-country').value;
 
-        if (!username) {
-            alert('Please enter a username.');
-            return;
-        }
-        if (!country) {
-            alert('Please select a country.');
-            return;
-        }
-
-        const result = await setupProfile(username, user.icon, country, avatarUrl);
-        if (!result.ok) {
-            alert(result.error || 'Unable to save profile.');
-            return;
-        }
-
-        if (selectedCosmeticId) {
-            const equipResult = await equipCosmeticAvatar(selectedCosmeticId);
-            if (!equipResult?.ok) {
-                alert(equipResult?.error || 'Unable to equip cosmetic avatar.');
+            // Phase 2: Enhanced Profile Validation
+            console.log('[UI] Validating profile input...');
+            if (!username || username.length === 0) {
+                const msg = 'Please enter a username.';
+                console.warn('[UI]', msg);
+                alert(msg);
                 return;
             }
-        }
+            if (username.length < 2) {
+                const msg = 'Username must be at least 2 characters long.';
+                console.warn('[UI]', msg);
+                alert(msg);
+                return;
+            }
+            if (username.length > 32) {
+                const msg = 'Username must be no more than 32 characters.';
+                console.warn('[UI]', msg);
+                alert(msg);
+                return;
+            }
+            if (!country || country.trim() === '') {
+                const msg = 'Please select a country.';
+                console.warn('[UI]', msg);
+                alert(msg);
+                return;
+            }
 
-        const matchedCountry = COUNTRIES.find((entry) => entry.name === country);
-        if (matchedCountry) {
-            selectedCountryId = matchedCountry.id;
-            saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
-        }
+            console.log('[UI] Validation passed, calling setupProfile...');
+            const result = await setupProfile(username, user.icon, country, avatarUrl);
+            if (!result.ok) {
+                alert(result.error || 'Unable to save profile.');
+                console.error('[UI] Profile save failed:', result.error);
+                return;
+            }
 
-        modal.remove();
-        setupHeaderDropdowns();
+            if (selectedCosmeticId) {
+                const equipResult = await equipCosmeticAvatar(selectedCosmeticId);
+                if (!equipResult?.ok) {
+                    alert(equipResult?.error || 'Unable to equip cosmetic avatar.');
+                    console.error('[UI] Cosmetic equip failed:', equipResult?.error);
+                    return;
+                }
+            }
+
+            const matchedCountry = COUNTRIES.find((entry) => entry.name === country);
+            if (matchedCountry) {
+                selectedCountryId = matchedCountry.id;
+                saveSettings({ ...loadSettings(), defaultCountry: selectedCountryId, mode: gameState.mode, difficulty: gameState.difficulty });
+            }
+
+            console.log('[UI] Profile saved successfully');
+            modal.remove();
+            setupHeaderDropdowns();
+        } catch (err) {
+            console.error('[UI] Profile save error:', err);
+            alert('An unexpected error occurred while saving. Please try again.');
+        }
     });
 }
 
@@ -856,6 +896,7 @@ async function renderCountries(continentId) {
         tab.classList.toggle('text-white', isActive);
     });
 
+    console.log('[UI] Rendering countries for continent:', continentId);
     const countries = getCountriesByContinent(continentId);
     const currentUser = getCurrentUser();
     const [progressionResult, standingsResult] = await Promise.all([
@@ -944,6 +985,7 @@ async function renderCountries(continentId) {
             renderCountries(continentId);
         });
     });
+    console.log('[UI] Countries rendered successfully');
 }
 
 async function renderCampaignContent() {
@@ -951,9 +993,14 @@ async function renderCampaignContent() {
     if (!main) return;
     main.innerHTML = '<div class="w-full text-center text-[#8A9389] uppercase tracking-widest text-xs py-12">Loading campaign standings...</div>';
 
-    const overview = await fetchCampaignOverview();
-    const standings = overview?.standings || [];
-    const leaders = standings.slice(0, 12);
+    try {
+        console.log('[UI] Rendering campaign content...');
+        const overview = await fetchCampaignOverview();
+        if (!overview) {
+            throw new Error('Campaign overview returned null');
+        }
+        const standings = overview?.standings || [];
+        const leaders = standings.slice(0, 12);
     const rows = leaders.map((faction, index) => {
         const progress = Math.min(100, Math.max(0, (Number(faction.weeklyXP || 0) / Number(faction.milestoneTarget || 50000)) * 100));
         return `
@@ -1011,11 +1058,24 @@ async function renderCampaignContent() {
     `;
 
     const championsButton = document.getElementById('campaign-open-champions');
-    if (championsButton) {
-        championsButton.addEventListener('click', () => {
-            currentLeaderboardView = 'champions';
-            renderScreen('leaderboard');
-        });
+        if (championsButton) {
+            championsButton.addEventListener('click', () => {
+                currentLeaderboardView = 'champions';
+                renderScreen('leaderboard');
+            });
+        }
+        console.log('[UI] Campaign content rendered successfully');
+    } catch (err) {
+        console.error('[UI] Failed to render campaign content:', err);
+        main.innerHTML = `
+            <section class="w-full">
+                <div class="bg-[#1C1B1B] border border-error/30 rounded-xl p-8 text-center">
+                    <h2 class="text-2xl font-bold text-[#E9C176] mb-2">Campaign Unavailable</h2>
+                    <p class="text-[#8A9389] mb-4">Unable to load campaign standings. Please try again later.</p>
+                    <button onclick="location.reload()" class="bg-[#004B23] text-white px-4 py-2 rounded-md hover:bg-[#005a2b]">Refresh Page</button>
+                </div>
+            </section>
+        `;
     }
 }
 

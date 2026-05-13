@@ -2,6 +2,7 @@
 import { getConvexClient } from './convexClient.js';
 import { getCurrentUser } from './auth.js';
 import { loadHistory, saveResult as saveLocalResult } from './storage.js';
+import { withTimeout, withRetry } from './utils.js';
 
 const VALID_MODES = new Set([15, 30, 60]);
 
@@ -110,17 +111,29 @@ export async function startServerRun(mode, difficulty) {
 
 export async function fetchLeaderboard(mode = 30, difficulty = 'medium', country = null) {
     try {
+        console.log('[API] Fetching leaderboard:', { mode, difficulty, country });
         const normalizedMode = Number(mode);
         const normalizedDifficulty = isValidDifficulty(difficulty) ? difficulty : 'medium';
-        const list = await getConvexClient().query(api.leaderboard.getTopRuns, {
-            mode: VALID_MODES.has(normalizedMode) ? normalizedMode : 30,
-            difficulty: normalizedDifficulty,
-            country: country || undefined
-        });
-        return { ok: true, list };
+        
+        // Phase 3: API Resilience - Add timeout and retry for critical API calls
+        const list = await withRetry(
+            () => withTimeout(
+                getConvexClient().query(api.leaderboard.getTopRuns, {
+                    mode: VALID_MODES.has(normalizedMode) ? normalizedMode : 30,
+                    difficulty: normalizedDifficulty,
+                    country: country || undefined
+                }),
+                8000,
+                'Leaderboard fetch'
+            ),
+            2,
+            'fetchLeaderboard'
+        );
+        console.log('[API] Leaderboard loaded:', list?.length || 0, 'entries');
+        return { ok: true, list: list || [] };
     } catch (err) {
-        console.error('Leaderboard error', err);
-        return { ok: false, error: err.message };
+        console.error('[API] Leaderboard error', err);
+        return { ok: false, error: err.message, list: [] };
     }
 }
 
@@ -130,10 +143,14 @@ export async function fetchCountryProgression(uid) {
     if (!resolvedUid) return { ok: true, progressions: [] };
 
     try {
-        return await getConvexClient().query(api.leaderboard.fetchCountryProgression, {
+        console.log('[API] Fetching country progression for:', resolvedUid);
+        const result = await getConvexClient().query(api.leaderboard.fetchCountryProgression, {
             uid: resolvedUid,
         });
+        console.log('[API] Country progression loaded:', result?.progressions?.length || 0);
+        return { ok: true, progressions: result?.progressions || [] };
     } catch (err) {
+        console.error('[API] Failed to fetch country progression:', err);
         return { ok: false, error: err.message, progressions: [] };
     }
 }
@@ -164,23 +181,65 @@ export async function fetchCountryModifiers() {
 }
 
 export async function fetchFactionStandings() {
-    return await getConvexClient().query(api.leaderboard.getFactionStandings, {});
+    try {
+        console.log('[API] Fetching faction standings...');
+        const result = await getConvexClient().query(api.leaderboard.getFactionStandings, {});
+        console.log('[API] Faction standings loaded:', result?.length || 0, 'factions');
+        return result || [];
+    } catch (err) {
+        console.error('[API] Failed to fetch faction standings:', err);
+        return [];
+    }
 }
 
 export async function fetchCampaignOverview() {
-    return await getConvexClient().query(api.leaderboard.getCampaignOverview, {});
+    try {
+        console.log('[API] Fetching campaign overview...');
+        
+        // Phase 3: API Resilience - Add timeout and retry for critical API calls
+        const result = await withRetry(
+            () => withTimeout(
+                getConvexClient().query(api.leaderboard.getCampaignOverview, {}),
+                8000,
+                'Campaign overview fetch'
+            ),
+            2,
+            'fetchCampaignOverview'
+        );
+        console.log('[API] Campaign overview loaded');
+        return result || { standings: [], weekKey: 'N/A', topCountry: 'TBD' };
+    } catch (err) {
+        console.error('[API] Failed to fetch campaign overview:', err);
+        return { standings: [], weekKey: 'N/A', topCountry: 'TBD' };
+    }
 }
 
 export async function fetchChampionsByWeek(weekKey) {
-    return await getConvexClient().query(api.leaderboard.getChampionsByWeek, {
-        weekKey: weekKey || undefined,
-    });
+    try {
+        console.log('[API] Fetching champions for week:', weekKey);
+        const result = await getConvexClient().query(api.leaderboard.getChampionsByWeek, {
+            weekKey: weekKey || undefined,
+        });
+        console.log('[API] Champions loaded:', result?.length || 0);
+        return result || [];
+    } catch (err) {
+        console.error('[API] Failed to fetch champions:', err);
+        return [];
+    }
 }
 
 export async function fetchUserCosmetics(uid) {
     const user = getCurrentUser();
     const resolvedUid = uid || user?.uid;
     if (!resolvedUid) return [];
-    return await getConvexClient().query(api.leaderboard.getUserCosmetics, { uid: resolvedUid });
+    try {
+        console.log('[API] Fetching cosmetics for user:', resolvedUid);
+        const result = await getConvexClient().query(api.leaderboard.getUserCosmetics, { uid: resolvedUid });
+        console.log('[API] Cosmetics loaded:', result?.length || 0);
+        return result || [];
+    } catch (err) {
+        console.error('[API] Failed to fetch cosmetics:', err);
+        return [];
+    }
 }
 

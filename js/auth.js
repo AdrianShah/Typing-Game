@@ -51,17 +51,28 @@ function getClerkPublishableKey() {
     // Prefer an explicit runtime override (useful for GitHub Pages or static hosts)
     try {
         if (typeof window !== 'undefined' && window.__CLERK_PUBLISHABLE_KEY) {
+            console.log('[Clerk] Using publishable key from window.__CLERK_PUBLISHABLE_KEY');
             return window.__CLERK_PUBLISHABLE_KEY;
         }
         if (typeof document !== 'undefined') {
             const meta = document.querySelector('meta[name="clerk-publishable-key"]');
-            if (meta?.content) return meta.content;
+            if (meta?.content) {
+                console.log('[Clerk] Using publishable key from meta tag');
+                return meta.content;
+            }
         }
     } catch (e) {
         // ignore DOM access errors in non-browser contexts
+        console.warn('[Clerk] Error checking for publishable key overrides:', e);
     }
 
-    return import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
+    const envKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
+    if (envKey) {
+        console.log('[Clerk] Using publishable key from environment: ' + envKey.substring(0, 15) + '...');
+    } else {
+        console.error('[Clerk] No publishable key found in window, meta tag, or environment. Set VITE_CLERK_PUBLISHABLE_KEY in .env.local');
+    }
+    return envKey;
 }
 
 function getStoredProfile() {
@@ -162,61 +173,99 @@ async function refreshFromClerk(clerkUser) {
 async function ensureClerk() {
     const publishableKey = getClerkPublishableKey();
     if (!publishableKey) {
-        console.warn('Clerk publishable key not provided. Authentication disabled.');
+        console.error('[Clerk] No publishable key provided. Authentication disabled.');
         return null;
     }
 
     if (!clerkInstance) {
-        const { Clerk } = await import('@clerk/clerk-js');
-        // Derive the Frontend API domain from the publishable key
-        let clerkDomain = '';
         try {
-            const parts = publishableKey.split('_');
-            if (parts.length >= 3) {
-                clerkDomain = atob(parts[2]).slice(0, -1);
+            console.log('[Clerk] Importing @clerk/clerk-js module...');
+            const { Clerk } = await import('@clerk/clerk-js');
+            console.log('[Clerk] Module imported successfully');
+            
+            // Derive the Frontend API domain from the publishable key
+            let clerkDomain = '';
+            try {
+                const parts = publishableKey.split('_');
+                if (parts.length >= 3) {
+                    clerkDomain = atob(parts[2]).slice(0, -1);
+                    console.log('[Clerk] Derived Clerk domain from key:', clerkDomain);
+                }
+            } catch (e) {
+                console.warn('[Clerk] Could not parse clerk domain from key:', e);
             }
-        } catch (e) {
-            console.warn('Could not parse clerk domain from key', e);
-        }
 
-        // We MUST load the UI script for Vanilla JS, otherwise openSignIn() fails
-        if (clerkDomain) {
-            await new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`;
-                script.async = true;
-                script.crossOrigin = 'anonymous';
-                script.onload = resolve;
-                script.onerror = () => reject(new Error('Failed to load @clerk/ui bundle'));
-                document.head.appendChild(script);
-            });
-        }
+            // We MUST load the UI script for Vanilla JS, otherwise openSignIn() fails
+            if (clerkDomain) {
+                console.log('[Clerk] Loading UI bundle from:', `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`);
+                await new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = `https://${clerkDomain}/npm/@clerk/ui@1/dist/ui.browser.js`;
+                    script.async = true;
+                    script.crossOrigin = 'anonymous';
+                    script.onload = () => {
+                        console.log('[Clerk] UI bundle loaded successfully');
+                        resolve();
+                    };
+                    script.onerror = () => {
+                        const err = new Error('Failed to load @clerk/ui bundle');
+                        console.error('[Clerk]', err);
+                        reject(err);
+                    };
+                    document.head.appendChild(script);
+                    // Safety timeout if script hangs
+                    setTimeout(() => reject(new Error('UI bundle loading timeout')), 10000);
+                });
+            } else {
+                console.warn('[Clerk] Could not derive domain; UI bundle loading will be skipped');
+            }
 
-        clerkInstance = new Clerk(publishableKey);
+            console.log('[Clerk] Creating Clerk instance...');
+            clerkInstance = new Clerk(publishableKey);
+            console.log('[Clerk] Clerk instance created');
+        } catch (err) {
+            console.error('[Clerk] Failed to initialize Clerk instance:', err);
+            return null;
+        }
     }
 
     if (!clerkReadyPromise) {
-        clerkReadyPromise = clerkInstance.load({
-            appearance: CLERK_APPEARANCE,
-            ui: window.__internal_ClerkUICtor ? { ClerkUI: window.__internal_ClerkUICtor } : undefined,
-        });
-        await clerkReadyPromise;
+        try {
+            console.log('[Clerk] Loading Clerk with appearance config...');
+            clerkReadyPromise = clerkInstance.load({
+                appearance: CLERK_APPEARANCE,
+                ui: window.__internal_ClerkUICtor ? { ClerkUI: window.__internal_ClerkUICtor } : undefined,
+            });
+            await clerkReadyPromise;
+            console.log('[Clerk] Clerk loaded and ready');
 
-        if (authUnsubscribe) {
-            authUnsubscribe();
-        }
-
-        authUnsubscribe = clerkInstance.addListener((resources) => {
-            if (resources.user === undefined) {
-                return;
+            if (authUnsubscribe) {
+                authUnsubscribe();
             }
 
-            refreshFromClerk(resources.user).catch((error) => {
-                console.error('Unable to sync Clerk profile:', error);
-            });
-        }, { skipInitialEmit: false });
+            authUnsubscribe = clerkInstance.addListener((resources) => {
+                if (resources.user === undefined) {
+                    console.log('[Clerk] User signed out');
+                    return;
+                }
+
+                console.log('[Clerk] User changed, syncing profile...');
+                refreshFromClerk(resources.user).catch((error) => {
+                    console.error('[Clerk] Unable to sync Clerk profile:', error);
+                });
+            }, { skipInitialEmit: false });
+        } catch (error) {
+            console.error('[Clerk] Failed to load Clerk:', error);
+            clerkReadyPromise = null;
+            return null;
+        }
     } else {
-        await clerkReadyPromise;
+        try {
+            await clerkReadyPromise;
+        } catch (error) {
+            console.error('[Clerk] clerkReadyPromise rejected:', error);
+            return null;
+        }
     }
 
     return clerkInstance;
@@ -248,8 +297,10 @@ export async function unmountClerkUserButton(targetNode) {
 }
 
 export async function initAuth() {
+    console.log('[Clerk] Initializing auth system...');
     const storedProfile = getStoredProfile();
     if (storedProfile) {
+        console.log('[Clerk] Restored user from localStorage:', storedProfile.player);
         currentUser = storedProfile;
         notifyListeners();
     }
@@ -257,40 +308,53 @@ export async function initAuth() {
     try {
         const clerk = await ensureClerk();
         if (!clerk) {
+            console.warn('[Clerk] Clerk not configured; using stored profile or guest mode');
             // Clerk not configured; keep stored profile if any and bail out.
             if (!storedProfile) {
                 currentUser = null;
                 notifyListeners();
             }
         } else if (clerk.user) {
+            console.log('[Clerk] Clerk has active user, syncing profile...');
             await refreshFromClerk(clerk.user);
         } else if (!storedProfile) {
+            console.log('[Clerk] No active Clerk user and no stored profile, entering guest mode');
             currentUser = null;
             notifyListeners();
         }
     } catch (error) {
-        console.error('Clerk initialization failed:', error);
+        console.error('[Clerk] Auth initialization failed:', error);
         if (!storedProfile) {
             currentUser = null;
             notifyListeners();
         }
     }
 
+    console.log('[Clerk] Auth initialization complete. Current user:', currentUser?.player || 'guest');
     return currentUser;
 }
 
 export async function loginWithClerk() {
+    console.log('[Clerk] Login initiated...');
     try {
         const clerk = await ensureClerk();
-        if (!clerk) return { ok: false, error: 'Clerk not configured' };
+        if (!clerk) {
+            const msg = 'Clerk not configured. Check console for details.';
+            console.error('[Clerk]', msg);
+            return { ok: false, error: msg };
+        }
 
+        console.log('[Clerk] Clerk ready, checking for openSignIn function...');
         if (typeof clerk.openSignIn === 'function') {
+            console.log('[Clerk] Opening sign-in modal...');
             await clerk.openSignIn({
                 appearance: CLERK_APPEARANCE,
             });
+            console.log('[Clerk] Sign-in modal opened');
             return { ok: true };
         }
 
+        console.log('[Clerk] openSignIn not available, attempting redirect...');
         await clerk.redirectToSignIn({
             signInForceRedirectUrl: window.location.href,
             signUpForceRedirectUrl: window.location.href,
@@ -299,8 +363,10 @@ export async function loginWithClerk() {
         });
         return { ok: true };
     } catch (error) {
+        console.error('[Clerk] Login error:', error);
         const message = error?.message || '';
         if (message.includes('cannot_render_single_session_enabled') && clerkInstance?.user) {
+            console.log('[Clerk] Single session mode detected, refreshing from existing user');
             await refreshFromClerk(clerkInstance.user);
             return { ok: true };
         }
@@ -309,11 +375,29 @@ export async function loginWithClerk() {
 }
 
 export async function setupProfile(username, icon, country, avatarUrl) {
-    if (!currentUser) return { ok: false, error: 'Login first.' };
+    if (!currentUser) {
+        console.error('[Auth] setupProfile called without logged-in user');
+        return { ok: false, error: 'Login first.' };
+    }
+
+    // Phase 2: Profile Validation
+    console.log('[Auth] Validating profile input...');
+    const trimmedUsername = username?.trim() || '';
+    if (trimmedUsername && (trimmedUsername.length < 2 || trimmedUsername.length > 32)) {
+        const err = 'Username must be between 2 and 32 characters';
+        console.warn('[Auth]', err);
+        return { ok: false, error: err };
+    }
+
+    if (!country || country.trim() === '') {
+        const err = 'Country is required';
+        console.warn('[Auth]', err);
+        return { ok: false, error: err };
+    }
 
     const nextUser = {
         ...currentUser,
-        player: username?.trim() || currentUser.player,
+        player: trimmedUsername || currentUser.player,
         icon: icon || currentUser.icon,
         country: country || currentUser.country || null,
         avatarUrl: avatarUrl?.trim() || currentUser.avatarUrl || null,
@@ -321,6 +405,7 @@ export async function setupProfile(username, icon, country, avatarUrl) {
     };
 
     try {
+        console.log('[Auth] Updating profile on server...');
         await getConvexClient().mutation(api.users.updateProfileBasics, {
             uid: nextUser.uid,
             player: nextUser.player,
@@ -330,6 +415,7 @@ export async function setupProfile(username, icon, country, avatarUrl) {
             profileComplete: true,
         });
 
+        console.log('[Auth] Profile updated, fetching updated record...');
         const updatedProfile = await getConvexClient().query(api.users.getProfileByUid, { uid: nextUser.uid });
         if (updatedProfile) {
             nextUser.lastUsernameChange = updatedProfile.lastUsernameChange || null;
@@ -340,8 +426,10 @@ export async function setupProfile(username, icon, country, avatarUrl) {
         currentUser = nextUser;
         persistCurrentUser(currentUser);
         notifyListeners();
+        console.log('[Auth] Profile setup complete for:', nextUser.player);
         return { ok: true, user: currentUser };
     } catch (error) {
+        console.error('[Auth] Profile setup error:', error);
         return { ok: false, error: error.message };
     }
 }
